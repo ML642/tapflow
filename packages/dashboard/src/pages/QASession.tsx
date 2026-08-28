@@ -80,7 +80,11 @@ export function QASession() {
     startDevice, resetDevice, handleBack, handleBackToMacs, handleSessionEnded,
   } = useAgentSession(os);
 
-  const selectedSession = agentGroups.find((s) => s.agentName === selectedAgent);
+  // A hostname is display text, not an identity: two machines can share one. A device session id is
+  // unique to the agent group and already arrives in `agents:listed`.
+  const selectedSession = agentGroups.find((s) => s.devices.some((d) => d.sessionId === selectedAgent));
+  const hasSelectedSession = selectedSession !== undefined;
+  const selectedAgentName = selectedSession?.agentName ?? 'Unknown';
   const {
     osVersions, osVersion, setOsVersion,
     deviceSearch, setDeviceSearch, versionedDevices,
@@ -132,7 +136,7 @@ export function QASession() {
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              {selectedAgent ? (
+              {hasSelectedSession ? (
                 <BreadcrumbLink asChild>
                   <button onClick={handleBackToMacs}>{buildLabel(build)}</button>
                 </BreadcrumbLink>
@@ -140,16 +144,16 @@ export function QASession() {
                 <BreadcrumbPage>{buildLabel(build)}</BreadcrumbPage>
               )}
             </BreadcrumbItem>
-            {selectedAgent && (
+            {hasSelectedSession && (
               <>
                 <BreadcrumbSeparator />
                 <BreadcrumbItem>
                   {activeSessionId ? (
                     <BreadcrumbLink asChild>
-                      <button onClick={handleBack}>{selectedAgent}</button>
+                      <button onClick={handleBack}>{selectedAgentName}</button>
                     </BreadcrumbLink>
                   ) : (
-                    <BreadcrumbPage>{selectedAgent}</BreadcrumbPage>
+                    <BreadcrumbPage>{selectedAgentName}</BreadcrumbPage>
                   )}
                 </BreadcrumbItem>
               </>
@@ -164,7 +168,7 @@ export function QASession() {
             )}
           </BreadcrumbList>
         </Breadcrumb>
-        {!selectedAgent && build.status_label && (
+        {!hasSelectedSession && build.status_label && (
           <Badge tone={STATUS_TONE[build.status_label as keyof typeof STATUS_TONE]}>
             {build.status_label}
           </Badge>
@@ -172,7 +176,7 @@ export function QASession() {
       </div>
     );
     return () => setBreadcrumb(null);
-  }, [build, selectedAgent, activeSessionId, deviceLabel, navigate, handleBack, handleBackToMacs, setBreadcrumb]);
+  }, [build, hasSelectedSession, selectedAgentName, activeSessionId, deviceLabel, navigate, handleBack, handleBackToMacs, setBreadcrumb]);
 
   return (
     <div className="flex h-full min-h-0 gap-6 p-6">
@@ -190,7 +194,7 @@ export function QASession() {
                 onSessionEnded={onSessionEnded}
               />
             </div>
-          ) : selectedAgent ? (
+          ) : hasSelectedSession ? (
             <div className="flex flex-col gap-5">
               <div className="flex items-center gap-3">
                 <button
@@ -325,8 +329,9 @@ export function QASession() {
                     const memPercent = res ? (res.memUsedMB / res.memTotalMB) * 100 : 0
                     const health = getResourceHealth(res, isStale)
                     const isOverloaded = health === 'overloaded'
+                    const agentSessionId = s.devices[0]!.sessionId
                     return (
-                      <TooltipProvider key={s.agentName}>
+                      <TooltipProvider key={agentSessionId}>
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <span
@@ -336,7 +341,7 @@ export function QASession() {
                               <button
                                 disabled={isOverloaded}
                                 aria-disabled={isOverloaded}
-                                onClick={() => setSelectedAgent(s.agentName ?? null)}
+                                onClick={() => setSelectedAgent(agentSessionId)}
                                 className={cn(
                                   'flex flex-col gap-3 rounded-lg border p-3 text-left transition-colors min-h-[100px] w-full',
                                   isOverloaded ? 'pointer-events-none' : 'hover:bg-accent',

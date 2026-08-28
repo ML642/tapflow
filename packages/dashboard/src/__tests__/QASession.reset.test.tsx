@@ -69,6 +69,20 @@ const ANDROID_AGENTS: SessionInfo[] = [{
   capabilities: ['clipboard'],
   devices: [device('dev-a', 'Pixel 7', 'android')],
 }]
+const DUPLICATE_NAME_AGENTS: SessionInfo[] = [
+  {
+    agentName: 'shared-mac',
+    platform: 'ios',
+    capabilities: ['clipboard', 'full-reset'],
+    devices: [{ ...device('dev-a', 'Capable iPhone'), sessionId: 'session-capable' }],
+  },
+  {
+    agentName: 'shared-mac',
+    platform: 'ios',
+    capabilities: ['clipboard'],
+    devices: [{ ...device('dev-b', 'Legacy iPhone'), sessionId: 'session-legacy' }],
+  },
+]
 
 /** The breadcrumb is rendered by the layout, outside QASession — and once a session is open it is
  *  the only way back to the Mac list, which is the path this issue is about. */
@@ -171,6 +185,23 @@ describe('QASession — Full reset applies to exactly one pick (#439)', () => {
 
     await user.click(screen.getByText('Pixel 7'))
     expect(viewerMounts).toEqual([{ deviceId: 'dev-a', resetMode: 'app-only' }])
+  })
+
+  it('selects the right agent when two machines share a hostname', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/qa?id=7']}>
+        <BreadcrumbProvider><Harness /></BreadcrumbProvider>
+      </MemoryRouter>,
+    )
+    await vi.waitFor(() => expect(deliver).not.toBeNull())
+    await act(async () => { deliver!({ type: 'agents:listed', sessions: DUPLICATE_NAME_AGENTS }) })
+
+    await user.click((await screen.findAllByText('shared-mac'))[1]!)
+
+    expect(await screen.findByText('Legacy iPhone')).toBeInTheDocument()
+    expect(screen.queryByText('Capable iPhone')).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
   })
 
   it('mounts a fresh viewer per pick — the per-mount reset guard depends on it', async () => {
