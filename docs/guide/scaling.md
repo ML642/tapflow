@@ -52,7 +52,7 @@ Simulators are booted and managed through the dashboard. The agent reports only 
 ## Monitoring
 
 Track CPU and RAM usage per agent from the **Mac Resources** tab in the dashboard.
-Each host appears as a separate card with a time-series chart (1h / 6h / 24h / 7d).
+Select a host to see its CPU and RAM, each as a time-series chart (1h / 6h / 24h / 7d).
 
 For a quick CLI check:
 

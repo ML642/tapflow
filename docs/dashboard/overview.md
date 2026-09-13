@@ -44,12 +44,12 @@ Recordings are kept for **72 hours** after creation. Download them before they e
 
 **Route**: `/mac-resources`
 
-CPU and RAM usage for every connected Mac agent. Useful for spotting overloaded hosts before assigning more sessions.
+CPU and RAM usage for each Mac agent. Useful for spotting overloaded hosts before assigning more sessions.
 
 | Element | Description |
 |---|---|
-| Agent card | One card per connected Mac. Shows hostname and current CPU / RAM. |
-| Time-series chart | Historical CPU % (blue) and RAM % (gray). |
+| Mac list | Macs that are connected now or have reported usage in the last 30 days, by hostname. A green dot marks a Mac whose agent is connected; select a Mac to show its charts. |
+| Time-series chart | Historical CPU % (blue) and RAM % (purple). |
 | Range selector | **1h** / **6h** / **24h** / **7d** — switches the visible window. |
 
 Data is sampled once per minute and retained for 30 days.
