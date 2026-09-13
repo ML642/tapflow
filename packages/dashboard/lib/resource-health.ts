@@ -2,6 +2,9 @@ import type { AgentResources } from '@/lib/types'
 
 export const RESOURCE_WARN_THRESHOLD = 70
 export const RESOURCE_BLOCK_THRESHOLD = 80
+/** A report older than this is treated as absent. One value for the QA Session cards and the Mac Resources
+ *  live head, so a Mac is not live on one page and stale on the other. */
+export const RESOURCE_STALE_MS = 30_000
 
 export type ResourceHealth = 'unknown' | 'healthy' | 'warning' | 'overloaded'
 

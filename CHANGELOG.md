@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Mac Resources charts follow the clock instead of freezing where the page loaded** ([#751](https://github.com/jo-duchan/tapflow/issues/751), [#749](https://github.com/jo-duchan/tapflow/issues/749)). The history was fetched once, so an open page never showed anything newer than when you arrived, and the gap between the last time label and the right edge looked like a skewed axis. The window now advances with time and the history refreshes on a cadence matched to the range (1 minute on 1h/6h, 5 on 24h, 15 on 7d), pausing while the tab is hidden; a failed refresh keeps the chart as it was. Each line now ends in a dot at the Mac's latest report, so it reaches the present instead of stopping up to a minute short, and hovering the dot reads its current value. Time labels sit on local round times rather than UTC ones, which were not round in 45-minute zones and put a 7d label on the wrong date west of Greenwich.
+
 ## [0.21.0] - 2026-09-12
 
 ### Added
