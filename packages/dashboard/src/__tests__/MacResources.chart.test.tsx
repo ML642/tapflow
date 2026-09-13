@@ -408,6 +408,19 @@ describe('the line reaches now through the live sample', () => {
         .toBe(`CPU, ${stampAt(NOW)}, latest, 60.1%`)
     })
 
+    it('does not hold a hovered reading for a chart that never had focus', () => {
+      // A hover goes through the same path as the keyboard, so it would record what AT is told too — but
+      // nothing is spoken for an unfocused chart, and holding the hovered reading there leaves a virtual
+      // cursor a value minutes old, the same as holding it past blur.
+      const { container, rerender } = chart({ live: 57.4 })
+      fireEvent.mouseMove(surfaceOf(container), { clientX: 40 + RIGHT_EDGE, clientY: 50 })
+      fireEvent.mouseLeave(surfaceOf(container))
+
+      rerender(element({ live: 60.1 }))
+      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'an unfocused chart reads the value it was hovered at')
+        .toBe(`CPU, ${stampAt(NOW)}, latest, 60.1%`)
+    })
+
     it('leaves a reader on a stored row where they are while the live value comes and goes', () => {
       const { container, rerender } = chart({ live: 57.4 })
       fireEvent.focus(surfaceOf(container))

@@ -356,11 +356,15 @@ export function AreaChartInner({
   // chose it should stay on it while rows are stored behind it.
   const [cursor, setCursor] = useState<number | 'live' | null>(null)
   const [readingShown, setReadingShown] = useState(false)
-  // **What AT has been told, held until the reader acts.** Derived each render, the focused slider's value
-  // changed with every live report (~10s) and every row that aged out, and a screen reader speaks every change
-  // to a focused slider's value — with no key pressed, for as long as focus stays (WCAG 2.2.2). Set only in
-  // `showAt`, which focus, keys and the pointer all go through; cleared on blur, where nothing is spoken.
+  // **What AT has been told, held until the reader acts — and only while the slider has focus.** Derived each
+  // render, the focused slider's value changed with every live report (~10s) and every row that aged out, and
+  // a screen reader speaks every change to a focused slider's value — with no key pressed, for as long as
+  // focus stays (WCAG 2.2.2). Set in `showAt`, which focus, keys and the pointer all go through. Applied only
+  // while focused: nothing is spoken for an unfocused chart, and a reading held there — past blur, or from a
+  // hover that never had focus — is what a virtual cursor would read minutes later.
   const [told, setTold] = useState<{ now: number; text: string } | null>(null)
+  const [focused, setFocused] = useState(false)
+  const held = focused ? told : null
 
   const innerW = width - MARGIN.left - MARGIN.right
   const innerH = height - MARGIN.top - MARGIN.bottom
@@ -423,7 +427,9 @@ export function AreaChartInner({
   // Named, because the page renders two of these side by side — an unattributed "02:50, 57%" does not say
   // which chart answered — and by the series rather than the card title, which is "CPU %" and printed the
   // unit twice. Date and value come from `stampOf`/`percentOf`, which the visible tooltip also calls: this
-  // is the only reading AT gets, since that tooltip is `aria-hidden`, so the two must not drift.
+  // is the only reading AT gets, since that tooltip is `aria-hidden`, so the two must not drift in format or
+  // rounding. They can differ in freshness, deliberately: while the slider is focused AT holds what it was
+  // told (see `told`) and the tooltip keeps drawing the live value, until the reader's next key.
   // **"latest" for AT only.** The newest stored row is often in the same minute as the live value, and what
   // marks the live value for a sighted reader — the dot at the edge — is `aria-hidden`.
   const series = chartConfig[dataKey].label
@@ -617,18 +623,22 @@ export function AreaChartInner({
             aria-label={`${label} samples`}
             aria-valuemin={0}
             aria-valuemax={Math.max(0, line.length - 1)}
-            // What AT was last told rather than what is under the cursor now — see `told`. Clamped, because the
-            // series can shrink under a held value (7d → 1h) and a slider must not report past its maximum.
-            aria-valuenow={told ? Math.min(told.now, Math.max(0, line.length - 1)) : idx}
-            aria-valuetext={told ? told.text : line[idx] ? reading(line[idx]!) : undefined}
+            // While focused, what AT was last told rather than what is under the cursor now — see `told`.
+            // Clamped, because the series can shrink under a held value and a slider must not report past its
+            // maximum.
+            aria-valuenow={held ? Math.min(held.now, Math.max(0, line.length - 1)) : idx}
+            aria-valuetext={held ? held.text : line[idx] ? reading(line[idx]!) : undefined}
             aria-describedby={hintId}
             // No inline `outlineColor`: `outline-none` is a *transparent* 2px outline, so colouring it
             // here painted a black box around the plot at rest. The colour belongs in the focus variant.
             className="outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-            onFocus={() => showAt(idx)}
+            onFocus={() => {
+              setFocused(true)
+              showAt(idx)
+            }}
             onBlur={() => {
               hideReading()
-              setTold(null)
+              setFocused(false)
             }}
             onKeyDown={handleKey}
             onMouseMove={handleMove}
@@ -639,7 +649,7 @@ export function AreaChartInner({
           />
         </Group>
       </svg>
-      <p id={hintId} className="sr-only">Use the arrow keys to read individual samples; End reads the latest value again. Escape hides the reading.</p>
+      <p id={hintId} className="sr-only">Use the arrow keys to read individual samples, and End for the latest value. Escape hides the reading.</p>
       {tooltipData && (
         <div
           // The reading rides on `aria-valuetext`; this is the same value drawn, and exposing both gave a
