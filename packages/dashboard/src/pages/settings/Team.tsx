@@ -66,6 +66,8 @@ export function TeamSettings() {
   useEffect(() => { if (inviteLink) linkRef.current?.focus() }, [inviteLink])
 
   async function onInvite(data: InviteData) {
+    // Cleared first, so a retry that fails the same way is announced again.
+    setInviteStatus('')
     try {
       const res = await fetch('/api/v1/team/invite', {
         method: 'POST',
@@ -95,6 +97,7 @@ export function TeamSettings() {
       }
     } catch {
       toast.error('Failed to create invite link')
+      setInviteStatus('Failed to create invite link.')
     }
   }
 

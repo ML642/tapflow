@@ -103,4 +103,18 @@ describe('Team — the invite link a teammate gets', () => {
     expect(screen.getByDisplayValue('http://192.168.219.113:4000/invite?token=t')).toBeInTheDocument()
     expect(toast.error).not.toHaveBeenCalled()
   })
+
+  it('says a failed invite inside the dialog, where assistive technology can hear it', async () => {
+    stubClipboard(vi.fn(async (_text: string) => {}))
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => Promise.resolve(
+      url.includes('/api/v1/team/invite') && init?.method === 'POST'
+        ? { ok: false, status: 500, json: () => Promise.resolve({ error: 'boom' }) }
+        : { ok: true, json: () => Promise.resolve([]) },
+    )))
+
+    await sendInvite()
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Failed to create invite link.'))
+    expect(toast.error).toHaveBeenCalledWith('Failed to create invite link')
+  })
 })

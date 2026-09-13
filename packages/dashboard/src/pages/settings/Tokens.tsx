@@ -47,6 +47,8 @@ export function TokenSettings() {
   const tokenLabelId = useId()
   const commandLabelId = useId()
   const tokenRef = useRef<HTMLInputElement>(null)
+  // Toasts render outside the dialog, which an open dialog hides from assistive technology.
+  const [dialogStatus, setDialogStatus] = useState('')
 
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -65,6 +67,7 @@ export function TokenSettings() {
   useEffect(() => { if (newToken) tokenRef.current?.focus() }, [newToken])
 
   async function onCreate(data: FormData) {
+    setDialogStatus('')
     try {
       const res = await fetch('/api/v1/tokens', {
         method: 'POST',
@@ -80,6 +83,7 @@ export function TokenSettings() {
       if (!res.ok) {
         const err = await res.json().catch(() => null) as { error?: string } | null
         toast.error(err?.error ?? 'Failed to create token')
+        setDialogStatus(err?.error ?? 'Failed to create token')
         return
       }
       const json = await res.json() as { token: string }
@@ -90,12 +94,13 @@ export function TokenSettings() {
       load()
     } catch {
       toast.error('Network error')
+      setDialogStatus('Network error')
     }
   }
 
   function handleDialogClose(o: boolean) {
     setOpen(o)
-    if (!o) { setNewToken(''); setTokenType('api'); setAgentWsBase(''); reset() }
+    if (!o) { setNewToken(''); setTokenType('api'); setAgentWsBase(''); setDialogStatus(''); reset() }
   }
 
   async function handleRevoke(id: number): Promise<boolean> {
@@ -125,6 +130,8 @@ export function TokenSettings() {
           </DialogTrigger>
           <DialogContent className="sm:max-w-md">
             <DialogHeader><DialogTitle>Create token</DialogTitle></DialogHeader>
+            {/* Mounted before any outcome arrives, so a change is announced. */}
+            <p role="status" className="sr-only">{dialogStatus}</p>
             {newToken ? (
               <div className="flex flex-col gap-3 pt-2">
                 <p id={tokenLabelId} className="text-sm text-muted-foreground">Copy this token now — it won&apos;t be shown again.</p>
@@ -140,7 +147,11 @@ export function TokenSettings() {
                   // Absent on a plain-HTTP page; unchecked, the click throws before .catch is attached and nothing is shown.
                   void (navigator.clipboard ? navigator.clipboard.writeText(newToken) : Promise.reject(new Error('no clipboard')))
                     .then(() => { toast.success('Token copied to clipboard'); setOpen(false) })
-                    .catch(() => toast.error('Failed to copy — copy manually'))
+                    .catch(() => {
+                      toast.error('Failed to copy — copy manually')
+                      setDialogStatus('Could not copy the token. Select it and copy it by hand.')
+                      tokenRef.current?.focus()
+                    })
                 }}>
                   Copy & close
                 </Button>

@@ -45,6 +45,8 @@ describe('Tokens — toast feedback', () => {
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith('Server error'),
     )
+    // The toast is outside the open dialog and hidden from assistive technology; the dialog says it too.
+    expect(screen.getByRole('status')).toHaveTextContent('Server error')
   })
 
   it('TC2-1: 서버 에러 body가 없으면 기본 메시지로 toast.error 호출', async () => {
@@ -120,6 +122,9 @@ describe('Tokens — toast feedback', () => {
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith('Failed to copy — copy manually'),
     )
+    expect(screen.getByRole('status')).toHaveTextContent(/could not copy the token/i)
+    // Back on the field, where the token can be selected and copied by hand.
+    expect(screen.getByDisplayValue('abc123')).toHaveFocus()
   })
 
   it('TC4b: 클립보드 API가 없는 평문 HTTP 페이지에서도 토큰을 선택할 수 있고 실패를 알린다', async () => {
