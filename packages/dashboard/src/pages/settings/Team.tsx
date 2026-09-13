@@ -165,7 +165,7 @@ export function TeamSettings() {
               <div className="flex flex-col gap-3 pt-2">
                 <p id={linkLabelId} className="text-sm text-muted-foreground">{linkCopied ? 'Invite link copied to clipboard:' : 'Copy this invite link:'}</p>
                 <Input ref={linkRef} readOnly value={inviteLink} aria-labelledby={linkLabelId} onFocus={(e) => e.currentTarget.select()} className="font-mono text-xs" />
-                <Button onClick={() => setInviteOpen(false)}>Done</Button>
+                <Button onClick={() => handleDialogClose(false)}>Done</Button>
               </div>
             ) : (
               <form onSubmit={handleSubmit(onInvite)} className="flex flex-col gap-4 pt-2">

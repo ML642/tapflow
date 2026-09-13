@@ -117,4 +117,21 @@ describe('Team — the invite link a teammate gets', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Failed to create invite link.'))
     expect(toast.error).toHaveBeenCalledWith('Failed to create invite link')
   })
+
+  // Done closes through a state setter, which a controlled Radix dialog does not report through
+  // onOpenChange — so without routing it through the reset, the next open showed the last invite.
+  it('opens on a fresh form after Done, not on the previous invite or its status', async () => {
+    stubClipboard(vi.fn(async (_text: string) => {}))
+    stubFetch({ token: 't', emailSent: false, inviteUrl: 'http://192.168.219.113:4000/invite?token=t' })
+    await sendInvite()
+    await screen.findByDisplayValue('http://192.168.219.113:4000/invite?token=t')
+
+    await userEvent.click(screen.getByRole('button', { name: /^done$/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: /invite member/i }))
+
+    expect(await screen.findByLabelText(/email/i)).toBeInTheDocument()
+    expect(screen.queryByDisplayValue(/invite\?token=t/)).not.toBeInTheDocument()
+    expect(screen.getByRole('status').textContent).toBe('')
+  })
 })

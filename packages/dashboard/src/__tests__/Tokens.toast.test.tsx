@@ -149,6 +149,65 @@ describe('Tokens — toast feedback', () => {
     )
   })
 
+  async function createAgentlessToken() {
+    renderTokens()
+    await userEvent.click(await screen.findByRole('button', { name: /new token/i }))
+    await userEvent.type(screen.getByLabelText(/name/i), 'my-token')
+    await userEvent.click(screen.getByRole('button', { name: /create token/i }))
+    await screen.findByDisplayValue('abc123')
+  }
+
+  function stubCreateFetch() {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn()
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ token: 'abc123' }) })
+        .mockResolvedValue({ ok: true, json: () => Promise.resolve([]) }),
+    )
+  }
+
+  // "Copy & close" closes through a state setter, which a controlled Radix dialog does not report through
+  // onOpenChange — so without the reset, the next open showed the previous token and its failure text.
+  it('TC4c: 복사 실패 후 성공으로 닫았다가 다시 열면 이전 토큰도 실패 문구도 남지 않는다', async () => {
+    const writeText = vi.fn().mockRejectedValueOnce(new Error('denied')).mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    stubCreateFetch()
+    await createAgentlessToken()
+
+    await userEvent.click(screen.getByRole('button', { name: /copy & close/i }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/could not copy the token/i))
+    await userEvent.click(screen.getByRole('button', { name: /copy & close/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    await userEvent.click(screen.getByRole('button', { name: /new token/i }))
+    expect(await screen.findByLabelText(/name/i)).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('abc123')).not.toBeInTheDocument()
+    expect(screen.getByRole('status').textContent).toBe('')
+  })
+
+  it('TC4d: 같은 복사 실패가 반복돼도 상태 영역이 다시 바뀌어 읽힌다', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    stubCreateFetch()
+    await createAgentlessToken()
+
+    await userEvent.click(screen.getByRole('button', { name: /copy & close/i }))
+    const status = screen.getByRole('status')
+    await waitFor(() => expect(status).toHaveTextContent(/could not copy the token/i))
+
+    const changes: MutationRecord[] = []
+    const observer = new MutationObserver((records) => changes.push(...records))
+    observer.observe(status, { childList: true, characterData: true, subtree: true })
+    await userEvent.click(screen.getByRole('button', { name: /copy & close/i }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(status).toHaveTextContent(/could not copy the token/i))
+    observer.disconnect()
+
+    // Writing identical text changes nothing in the DOM, and a live region speaks only on a change.
+    expect(changes.length).toBeGreaterThan(0)
+  })
+
   it('TC5: revoke 성공 시 toast.success 호출', async () => {
     vi.stubGlobal(
       'fetch',

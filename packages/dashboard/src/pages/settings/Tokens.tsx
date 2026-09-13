@@ -144,9 +144,12 @@ export function TokenSettings() {
                   </>
                 )}
                 <Button onClick={() => {
+                  // Cleared first, so a repeated failure changes the status again and is announced again.
+                  setDialogStatus('')
                   // Absent on a plain-HTTP page; unchecked, the click throws before .catch is attached and nothing is shown.
                   void (navigator.clipboard ? navigator.clipboard.writeText(newToken) : Promise.reject(new Error('no clipboard')))
-                    .then(() => { toast.success('Token copied to clipboard'); setOpen(false) })
+                    // Through the reset: a controlled dialog does not report this close through onOpenChange.
+                    .then(() => { toast.success('Token copied to clipboard'); handleDialogClose(false) })
                     .catch(() => {
                       toast.error('Failed to copy — copy manually')
                       setDialogStatus('Could not copy the token. Select it and copy it by hand.')
