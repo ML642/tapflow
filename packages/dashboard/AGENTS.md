@@ -296,3 +296,12 @@ the toolbar buttons Android has, not to overlay the frame. Read it that way when
 device control is unreachable: ask whether the control should exist in the DOM at all, and if it
 should, put it in the toolbar where the group rules above already say it belongs.
 
+### A toast fired while a dialog is open is not heard
+
+`<Toaster>` renders in place inside the app root, and an open Radix dialog sets `aria-hidden` on everything
+outside its portal. So a toast's live region is hidden for as long as the dialog stays open, and a
+screen-reader user hears nothing. An outcome that belongs to a dialog is said inside it, in a
+`role="status"` element mounted before the outcome arrives; `Team.tsx`'s invite dialog is the example. A
+value the user has to copy goes in a focusable read-only field, not a `<code>`: on a plain-HTTP page there
+is no clipboard API, and a keyboard user can only select what can take focus.
+

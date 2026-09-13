@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { toast } from 'sonner'
 import { TeamSettings } from '@/src/pages/settings/Team'
@@ -49,9 +49,11 @@ describe('Team — the invite link a teammate gets', () => {
 
     await sendInvite()
 
-    expect(await screen.findByText('http://192.168.219.113:4000/invite?token=t')).toBeInTheDocument()
+    const field = await screen.findByDisplayValue('http://192.168.219.113:4000/invite?token=t')
     expect(writeText).toHaveBeenCalledWith('http://192.168.219.113:4000/invite?token=t')
-    expect(screen.queryByText(/localhost:3000/)).not.toBeInTheDocument()
+    expect(screen.queryByDisplayValue(/localhost:3000/)).not.toBeInTheDocument()
+    // The form and its focused button are gone; focus lands on the link, where it can be selected by hand.
+    await waitFor(() => expect(field).toHaveFocus())
   })
 
   it('builds the link from the teammate base when the relay offers none', async () => {
@@ -60,7 +62,7 @@ describe('Team — the invite link a teammate gets', () => {
 
     await sendInvite()
 
-    expect(await screen.findByText('http://192.168.0.50:4000/invite?token=t')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('http://192.168.0.50:4000/invite?token=t')).toBeInTheDocument()
   })
 
   it('says the link was copied only when it was', async () => {
@@ -69,7 +71,10 @@ describe('Team — the invite link a teammate gets', () => {
 
     await sendInvite()
 
-    expect(await screen.findByText(/invite link copied to clipboard/i)).toBeInTheDocument()
+    expect(await screen.findByText(/invite link copied to clipboard:/i)).toBeInTheDocument()
+    expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/copied/i))
+    // Toasts render outside the dialog, which hides them from assistive technology; the dialog says it too.
+    expect(screen.getByRole('status')).toHaveTextContent(/invite link copied to clipboard\./i)
   })
 
   it('does not claim a copy the browser refused', async () => {
@@ -83,6 +88,8 @@ describe('Team — the invite link a teammate gets', () => {
     expect(screen.queryByText(/invite link copied to clipboard/i)).not.toBeInTheDocument()
     expect(toast.warning).toHaveBeenCalledTimes(1)
     expect(vi.mocked(toast.warning).mock.calls[0][0]).not.toMatch(/copied/i)
+    expect(screen.getByRole('status')).toHaveTextContent(/copy the invite link/i)
+    expect(screen.getByRole('status')).not.toHaveTextContent(/copied/i)
     expect(toast.error).not.toHaveBeenCalled()
   })
 
@@ -93,7 +100,7 @@ describe('Team — the invite link a teammate gets', () => {
     await sendInvite()
 
     expect(await screen.findByText(/copy this invite link/i)).toBeInTheDocument()
-    expect(screen.getByText('http://192.168.219.113:4000/invite?token=t')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('http://192.168.219.113:4000/invite?token=t')).toBeInTheDocument()
     expect(toast.error).not.toHaveBeenCalled()
   })
 })

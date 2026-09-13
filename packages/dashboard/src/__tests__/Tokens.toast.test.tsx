@@ -94,7 +94,7 @@ describe('Tokens — toast feedback', () => {
     await userEvent.click(await screen.findByRole('button', { name: /new token/i }))
     await userEvent.type(screen.getByLabelText(/name/i), 'my-token')
     await userEvent.click(screen.getByRole('button', { name: /create token/i }))
-    await screen.findByText('abc123')
+    await screen.findByDisplayValue('abc123')
     await userEvent.click(screen.getByRole('button', { name: /copy & close/i }))
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith('Token copied to clipboard'),
@@ -115,7 +115,29 @@ describe('Tokens — toast feedback', () => {
     await userEvent.click(await screen.findByRole('button', { name: /new token/i }))
     await userEvent.type(screen.getByLabelText(/name/i), 'my-token')
     await userEvent.click(screen.getByRole('button', { name: /create token/i }))
-    await screen.findByText('abc123')
+    await screen.findByDisplayValue('abc123')
+    await userEvent.click(screen.getByRole('button', { name: /copy & close/i }))
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('Failed to copy — copy manually'),
+    )
+  })
+
+  it('TC4b: 클립보드 API가 없는 평문 HTTP 페이지에서도 토큰을 선택할 수 있고 실패를 알린다', async () => {
+    vi.stubGlobal('navigator', { ...navigator, clipboard: undefined })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn()
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ token: 'abc123' }) })
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) }),
+    )
+    renderTokens()
+    await userEvent.click(await screen.findByRole('button', { name: /new token/i }))
+    await userEvent.type(screen.getByLabelText(/name/i), 'my-token')
+    await userEvent.click(screen.getByRole('button', { name: /create token/i }))
+    const field = await screen.findByDisplayValue('abc123')
+    // Shown once and not copyable by the API here, so it must take focus to be selected by hand.
+    await waitFor(() => expect(field).toHaveFocus())
     await userEvent.click(screen.getByRole('button', { name: /copy & close/i }))
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith('Failed to copy — copy manually'),

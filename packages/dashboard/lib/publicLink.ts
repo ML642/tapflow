@@ -56,11 +56,15 @@ let pending: Promise<TeammateBases> | null = null
 /**
  * Asks the relay once per page. A refused or failed lookup resolves to the viewer fallback rather than
  * throwing: every caller is about to show or copy an address, and the browser's own is better than none.
+ * A failure is not cached, so a session that expired and was renewed without a reload asks again.
  */
 export function loadTeammateBases(): Promise<TeammateBases> {
   pending ??= fetch('/api/v1/relay/host', { credentials: 'include' })
-    .then((res) => (res.ok ? (res.json() as Promise<RelayHostInfo>) : null))
-    .catch(() => null)
+    .then((res) => (res.ok ? (res.json() as Promise<RelayHostInfo>) : Promise.reject(new Error(`relay host lookup: ${res.status}`))))
+    .catch(() => {
+      pending = null
+      return null
+    })
     .then((info) => {
       const { protocol, hostname, host, origin } = window.location
       return resolveTeammateBases(info, { protocol, hostname, host, origin })

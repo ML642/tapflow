@@ -98,4 +98,15 @@ describe('CommentPanel — copying a link to a comment', () => {
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not copy link'))
   })
+
+  it('reports a write the browser refused, and does not claim it', async () => {
+    writeText.mockRejectedValue(new Error('denied'))
+    stubFetch(configured)
+    render(<CommentPanel buildId={3} />)
+
+    await userEvent.click(await screen.findByRole('button', { name: /copy link to comment/i }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not copy link'))
+    expect(toast.success).not.toHaveBeenCalled()
+  })
 })

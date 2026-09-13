@@ -1,17 +1,16 @@
 import type { TapflowConfig } from './config.js'
-import { buildInviteBaseUrl, forTeammates, resolvePublicBaseUrl, type TunnelRuntime } from './publicUrl.js'
+import { buildInviteBaseUrl, forTeammates, resolvePublicBaseUrl, resolvePublicBaseUrls, type TunnelRuntime } from './publicUrl.js'
 
 type ProxyCfg = Pick<TapflowConfig, 'tunnel' | 'relay' | 'local'>
 
-// Allow cross-origin PAT use only from the public origin + loopback (LAN is same-origin).
+// Allow cross-origin PAT use only from the public origins + loopback (LAN is same-origin).
 export function buildCorsOrigins(cfg: ProxyCfg, port: number, tunnel?: TunnelRuntime): string[] {
   // Not buildInviteBaseUrl: its localhost fallback would allowlist a stale loopback at config.local.port under a different --port.
-  const base = resolvePublicBaseUrl(cfg, tunnel)
-  const configuredOrigin = (() => {
-    if (base === null) return null
+  // Every public base, not only the preferred one: a detected tunnel must not push relay.url out.
+  const configuredOrigins = resolvePublicBaseUrls(cfg, tunnel).map((base) => {
     try { return new URL(base).origin } catch { return null }
-  })()
-  const origins = [configuredOrigin, `http://localhost:${port}`, `http://127.0.0.1:${port}`]
+  })
+  const origins = [...configuredOrigins, `http://localhost:${port}`, `http://127.0.0.1:${port}`]
     .filter((o): o is string => o !== null)
   return [...new Set(origins)]
 }

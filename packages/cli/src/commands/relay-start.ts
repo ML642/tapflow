@@ -69,8 +69,10 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
     }
     const started = await startConfiguredTunnel(tunnelCfg, port)
     tunnel = started.tunnel
-    publicUrl = started.publicUrl
     tunnelRuntime = tunnelRuntimeFor(started.publicUrl, tls !== undefined)
+    // The banner advertises only what the relay will hand out.
+    publicUrl = tunnelRuntime.publicUrl
+    if (started.publicUrl && !publicUrl) warn(`Not advertising ${started.publicUrl}: this relay serves HTTPS, and a plain-HTTP tunnel URL does not reach it.`)
   }
 
   const proxyWarning = proxyWithoutPublicUrlWarning(config, tunnelRuntime)

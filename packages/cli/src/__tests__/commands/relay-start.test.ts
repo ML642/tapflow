@@ -319,5 +319,22 @@ describe('cmdRelayStart', () => {
       await expect(cmdRelayStart({})).resolves.toBeUndefined()
       expect(TailscaleTunnel).toHaveBeenCalled()
     })
+
+    it('TLS relay에는 http:// 터널 주소를 넘기지 않고 배너에도 싣지 않는다', async () => {
+      vi.mocked(config).tls = { mode: 'import-cert', certPath: '/cert.pem', keyPath: '/key.pem' }
+      vi.mocked(createCertProvider).mockReturnValue({
+        ensureCert: vi.fn().mockResolvedValue({ cert: 'CERT', key: 'KEY' }),
+      } as never)
+      vi.mocked(resolveRelayDisplayHost).mockReturnValue('relay.example.com')
+      const warnings: string[] = []
+      vi.spyOn(console, 'warn').mockImplementation((...args) => { warnings.push(args.join(' ')) })
+
+      await cmdRelayStart({})
+
+      expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ tunnel: { publicUrl: null } }))
+      // "Tunnel ready" still names the URL the tunnel reported; the banner must not offer it.
+      expect(output.filter((line) => line.includes('Public :'))).toEqual([])
+      expect(warnings.join('\n')).toContain('Not advertising http://my-mac.tailnet.ts.net:4000')
+    })
   })
 })

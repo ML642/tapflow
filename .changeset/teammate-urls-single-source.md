@@ -9,4 +9,4 @@
 
 **Running the relay image without `TAPFLOW_RELAY_URL` is said out loud.** The relay logs a warning at startup when it runs in a container with no address a teammate can open, since invitations then point at `localhost`. Inside a container it also stops offering its bridge address (such as `172.17.0.2`) as the LAN address for the agent command.
 
-**The invite dialog no longer claims a copy that did not happen.** It said "copied" even when the browser refused, and on a plain-HTTP page, which has no clipboard API, it reported the invitation itself as failed.
+**The invite dialog no longer claims a copy that did not happen.** It said "copied" even when the browser refused, and on a plain-HTTP page, which has no clipboard API, it reported the invitation itself as failed. The invite link, a new token and the agent command now sit in read-only fields that take focus, so on such a page they can be selected and copied by keyboard, and the invite dialog states its outcome to screen readers, which cannot hear a toast behind an open dialog. "Copy & close" on a new token no longer does nothing on a plain-HTTP page.

@@ -349,8 +349,15 @@ describe('cmdStart', () => {
           ensureCert: vi.fn().mockResolvedValue({ cert: 'CERT', key: 'KEY' }),
         } as never)
         vi.mocked(resolveRelayDisplayHost).mockReturnValue('relay.example.com')
+        const output: string[] = []
+        vi.spyOn(console, 'log').mockImplementation((...args) => output.push(args.join(' ')))
+        const warnings: string[] = []
+        vi.spyOn(console, 'warn').mockImplementation((...args) => { warnings.push(args.join(' ')) })
         await cmdStart({ platform: 'ios' })
         expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ tunnel: { publicUrl: null } }))
+        // The banner advertises only what the relay hands out, and says why it dropped the rest.
+        expect(output.join('\n')).not.toContain('my-mac.tailnet.ts.net')
+        expect(warnings.join('\n')).toContain('Not advertising http://my-mac.tailnet.ts.net:4000')
       })
 
       it('relay 시작이 실패하면 터널을 멈추고 원래 오류를 전파한다', async () => {

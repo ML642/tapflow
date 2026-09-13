@@ -88,9 +88,14 @@ describe('forTeammates — an address only the relay host can open is not handed
   it.each([
     'http://localhost:4000',
     'http://LOCALHOST:4000',
+    'http://localhost.:4000',
     'ws://127.0.0.1:4000',
     'http://127.8.0.1:4000',
+    'http://2130706433:4000',
     'http://[::1]:4000',
+    'http://[::ffff:127.0.0.1]:4000',
+    'http://0.0.0.0:4000',
+    'http://[::]:4000',
     'not a url',
   ])('%s → null', (url) => {
     expect(forTeammates(url)).toBeNull()
@@ -100,6 +105,7 @@ describe('forTeammates — an address only the relay host can open is not handed
     'http://192.168.0.9:4000',
     'https://localhost.example.com',
     'http://mac.tailnet.ts.net:4000',
+    'http://[::ffff:192.168.0.1]:4000',
   ])('%s passes through', (url) => {
     expect(forTeammates(url)).toBe(url)
   })
@@ -118,6 +124,8 @@ describe('containerWithoutPublicUrlWarning — the Docker mistake is said out lo
 
   it('treats a loopback relay.url as no address', () => {
     expect(containerWithoutPublicUrlWarning(cfg({ relayUrl: 'ws://localhost:4000' }), true)).toContain('TAPFLOW_RELAY_URL')
+    // A bind address copied into the URL is the likely Docker mistake.
+    expect(containerWithoutPublicUrlWarning(cfg({ relayUrl: 'http://0.0.0.0:4000' }), true)).toContain('TAPFLOW_RELAY_URL')
   })
 
   it('stays quiet once a reachable address is configured', () => {
@@ -136,6 +144,14 @@ describe('CORS allowlist and proxy warning follow runtime tunnel state', () => {
     const up: TunnelRuntime = { publicUrl: 'http://mac.tailnet.ts.net:4000' }
     expect(buildCorsOrigins(c, 4000, up)).toContain('http://mac.tailnet.ts.net:4000')
     expect(proxyWithoutPublicUrlWarning(c, up)).toBeNull()
+  })
+
+  // On main a Tailscale tunnel with no configured publicUrl left relay.url's origin on the list; a detected
+  // URL must add to it, not replace it, or a proxy that rewrites Host starts answering 403.
+  it('a detected tunnel does not push relay.url out of the allowlist', () => {
+    const c = cfg({ tunnel: tailscale(), relayUrl: 'https://relay.example.com' })
+    expect(buildCorsOrigins(c, 4000, { publicUrl: 'http://mac.tailnet.ts.net:4000' }))
+      .toEqual(['http://mac.tailnet.ts.net:4000', 'https://relay.example.com', 'http://localhost:4000', 'http://127.0.0.1:4000'])
   })
 
   it('a tunnel that did not start leaves its configured origin out and brings the warning back', () => {

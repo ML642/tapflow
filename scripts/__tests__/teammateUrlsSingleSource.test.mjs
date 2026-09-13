@@ -28,8 +28,9 @@ import { sources } from './sourceFiles.mjs'
 //
 // **What it does not catch**, because a spelling check is a floor and not a fence: an origin assembled
 // from allowed parts (`${location.protocol}//${location.hostname}`), a `location` reached through an
-// alias, and anything in `packages/cli`, which is not walked — the CLI hands the relay a tunnel outcome
-// and builds no teammate link of its own.
+// alias, the bare `origin` global (`window.origin`, `self.origin` and `globalThis.origin` are caught), and
+// anything in `packages/cli`, which is not walked — the CLI hands the relay a tunnel outcome and builds no
+// teammate link of its own.
 //
 // Comments are blanked before matching, so this header and the doc comments that explain the rule do not
 // trip it. Only `//` after whitespace counts as a comment: `${proto}//${location.host}` in a template
@@ -89,7 +90,7 @@ export function judgeRelayFile(path, text) {
 const RELAY_HOST_READ = /\/api\/v1\/relay\/host|\bpublicBaseUrl\b|\bagentRelayUrl\b/
 const RELAY_HOST_READER = 'packages/dashboard/lib/publicLink.ts'
 
-const LOCATION_READ = /\blocation\b(?!\.(pathname|search|hash|hostname|protocol)\b)|\bdocument\.(URL|baseURI)\b/
+const LOCATION_READ = /\blocation\b(?!\.(pathname|search|hash|hostname|protocol)\b)|\bdocument\.(URL|baseURI)\b|\b(window|self|globalThis)\.origin\b/
 
 /** Files allowed any read of `location`, and why. Allowing a whole file is coarse; see the header. */
 const LOCATION_ALLOWED = {
@@ -162,6 +163,8 @@ describe('the rules match what they are meant to', () => {
     "const l = window['location']",
     'const b = document.baseURI',
     'const p = location.port',
+    'const u = `${window.origin}/invite?token=${t}`',
+    'const o = globalThis.origin',
   ])('dashboard: flags %s', (line) => {
     expect(judgeDashboardFile('packages/dashboard/components/X.tsx', line)).toHaveLength(1)
   })

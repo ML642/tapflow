@@ -92,9 +92,9 @@ describe('Tokens — scope selection', () => {
     await openDialogAndType('agent-mac-1')
     await selectAgentType()
     await userEvent.click(screen.getByRole('button', { name: /create token/i }))
-    const cmd = await screen.findByText(/tapflow agent start --relay/)
-    expect(cmd.textContent).toContain('--relay ws://192.168.0.50:4000')
-    expect(cmd.textContent).toContain('--token tflw_pat_abc')
+    const cmd = await screen.findByDisplayValue(/tapflow agent start --relay/) as HTMLInputElement
+    expect(cmd.value).toContain('--relay ws://192.168.0.50:4000')
+    expect(cmd.value).toContain('--token tflw_pat_abc')
   })
 
   it('릴레이가 LAN 주소를 모르면 뷰어 주소로 폴백한다', async () => {
@@ -103,8 +103,8 @@ describe('Tokens — scope selection', () => {
     await openDialogAndType('agent-mac-1')
     await selectAgentType()
     await userEvent.click(screen.getByRole('button', { name: /create token/i }))
-    const cmd = await screen.findByText(/tapflow agent start --relay/)
-    expect(cmd.textContent).toContain(`--relay ws://${window.location.host}`)
+    const cmd = await screen.findByDisplayValue(/tapflow agent start --relay/) as HTMLInputElement
+    expect(cmd.value).toContain(`--relay ws://${window.location.host}`)
   })
 
   it('relay.url이 있으면 LAN 추측보다 그 주소로 agent 커맨드를 만든다', async () => {
@@ -113,8 +113,8 @@ describe('Tokens — scope selection', () => {
     await openDialogAndType('agent-mac-1')
     await selectAgentType()
     await userEvent.click(screen.getByRole('button', { name: /create token/i }))
-    const cmd = await screen.findByText(/tapflow agent start --relay/)
-    expect(cmd.textContent).toContain('--relay ws://192.168.219.113:4000')
+    const cmd = await screen.findByDisplayValue(/tapflow agent start --relay/) as HTMLInputElement
+    expect(cmd.value).toContain('--relay ws://192.168.219.113:4000')
   })
 
   // A tunnel URL is for teammates' browsers. An agent on the relay's own LAN should not stream through it.
@@ -124,9 +124,9 @@ describe('Tokens — scope selection', () => {
     await openDialogAndType('agent-mac-1')
     await selectAgentType()
     await userEvent.click(screen.getByRole('button', { name: /create token/i }))
-    const cmd = await screen.findByText(/tapflow agent start --relay/)
-    expect(cmd.textContent).toContain('--relay ws://192.168.0.50:4000')
-    expect(cmd.textContent).not.toContain('vps.example.com')
+    const cmd = await screen.findByDisplayValue(/tapflow agent start --relay/) as HTMLInputElement
+    expect(cmd.value).toContain('--relay ws://192.168.0.50:4000')
+    expect(cmd.value).not.toContain('vps.example.com')
   })
 
   it('비-Admin의 agent 스코프 발급 거절(403) 시 서버 사유를 토스트로 보여준다', async () => {

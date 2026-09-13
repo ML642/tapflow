@@ -32,15 +32,26 @@ export interface TunnelRuntime {
   publicUrl: string | null
 }
 
-/** The base a teammate's browser should use, or null when neither a tunnel nor `relay.url` gives one. */
-export function resolvePublicBaseUrl(cfg: PublicUrlConfig, tunnel?: TunnelRuntime): string | null {
+/**
+ * Every public base this relay is known by, most preferred first: the tunnel (as started, or as configured
+ * when no entry point reports one), then `relay.url`. CORS allowlists all of them. Each is an address the
+ * operator gave this relay, and dropping `relay.url` whenever a tunnel came up would 403 the dashboard
+ * behind a proxy that rewrites Host.
+ */
+export function resolvePublicBaseUrls(cfg: PublicUrlConfig, tunnel?: TunnelRuntime): string[] {
+  const bases: string[] = []
   const tunnelUrl = tunnel ? tunnel.publicUrl : cfg.tunnel?.publicUrl
-  if (tunnelUrl) return stripTrailingSlash(tunnelUrl)
+  if (tunnelUrl) bases.push(stripTrailingSlash(tunnelUrl))
   if (cfg.relay.url) {
     const http = cfg.relay.url.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://')
-    return stripTrailingSlash(http)
+    bases.push(stripTrailingSlash(http))
   }
-  return null
+  return bases
+}
+
+/** The base a teammate's browser should use, or null when neither a tunnel nor `relay.url` gives one. */
+export function resolvePublicBaseUrl(cfg: PublicUrlConfig, tunnel?: TunnelRuntime): string | null {
+  return resolvePublicBaseUrls(cfg, tunnel)[0] ?? null
 }
 
 /** Base for links in outgoing mail. Called with one argument, the result is what it has always been. */
@@ -55,11 +66,14 @@ export function resolveAgentRelayUrl(cfg: Pick<TapflowConfig, 'relay'>): string 
   return stripTrailingSlash(ws)
 }
 
+const UNOPENABLE_HOSTS = new Set(['localhost', '::1', '0.0.0.0', '::'])
+
 /**
- * Null for an address only the relay's own machine can open, or one that does not parse. `relay.url` is
- * legitimately `ws://localhost:4000` for a co-located CLI — the MCP docs give that value for the same
- * variable — and handing it to the dashboard would replace a working browser origin with localhost.
- * Applied only to what the dashboard receives; mail and CORS keep the unfiltered value.
+ * Null for an address a teammate cannot open: loopback in any spelling the URL parser leaves (`127.x`,
+ * `::1`, `::ffff:7f00:1`, a trailing-dot `localhost.`), a bind-all address (`0.0.0.0`, `::`), or one that
+ * does not parse. `relay.url` is legitimately `ws://localhost:4000` for a co-located CLI — the MCP docs
+ * give that value for the same variable — and handing it to the dashboard would replace a working browser
+ * origin with localhost. Applied only to what the dashboard receives; mail and CORS keep the unfiltered value.
  */
 export function forTeammates(url: string | null): string | null {
   if (url === null) return null
@@ -69,8 +83,8 @@ export function forTeammates(url: string | null): string | null {
   } catch {
     return null
   }
-  const host = hostname.replace(/^\[|\]$/g, '')
-  if (host === 'localhost' || host === '::1' || /^127\./.test(host)) return null
+  const host = hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  if (UNOPENABLE_HOSTS.has(host) || /^127\./.test(host) || /^::ffff:(127\.|7f[0-9a-f]{2}:)/i.test(host)) return null
   return url
 }
 

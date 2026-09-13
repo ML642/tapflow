@@ -87,6 +87,13 @@ describe('loadTeammateBases', () => {
     expect(results.map((r) => r.linkBase)).toEqual(Array(3).fill('http://192.168.0.50:4000'))
   })
 
+  it('does not cache a failed lookup', async () => {
+    const fetchMock = stubRelayHost({ ok: false, body: { error: 'Unauthorized' } })
+    await loadTeammateBases()
+    await loadTeammateBases()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it.each([
     ['a refused request', { ok: false, body: { error: 'Unauthorized' } }],
     ['a network error', new Error('offline')],
