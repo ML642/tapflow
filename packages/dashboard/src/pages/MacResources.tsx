@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useRelay } from '@/hooks/useRelay'
 import { useBreadcrumb } from '@/hooks/useBreadcrumb'
+import { useDocumentVisible } from '@/hooks/useDocumentVisible'
+import { useFlowingNow } from '@/hooks/useFlowingNow'
 import { Monitor } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { scaleTime, scaleLinear } from '@visx/scale'
@@ -10,10 +12,19 @@ import { GridRows } from '@visx/grid'
 import { LinearGradient } from '@visx/gradient'
 import { Group } from '@visx/group'
 import { ParentSize } from '@visx/responsive'
-import { useTooltip } from '@visx/tooltip'
 import { localPoint } from '@visx/event'
 import { curveMonotoneX } from '@visx/curve'
 import { bisector } from 'd3-array'
+import {
+  HISTORY_POLL_MS,
+  RANGE_MS,
+  flowIntervalMs,
+  formatTick,
+  liveHeadFor,
+  localTicks,
+  roundPercent,
+  type Range,
+} from '@/lib/resource-chart'
 import type { BrowserInbound, SessionInfo } from '@/lib/types'
 
 interface ResourcePoint {
@@ -21,8 +32,6 @@ interface ResourcePoint {
   mem_percent: number
   recorded_at: string
 }
-
-type Range = '1h' | '6h' | '24h' | '7d'
 
 type ChartConfig = Record<string, { label: string; color: string }>
 
@@ -32,24 +41,22 @@ const chartConfig = {
 } satisfies ChartConfig
 
 const RANGE_LABELS: Record<Range, string> = { '1h': '1h', '6h': '6h', '24h': '24h', '7d': '7d' }
-const RANGE_MS: Record<Range, number> = { '1h': 3_600_000, '6h': 21_600_000, '24h': 86_400_000, '7d': 604_800_000 }
-// Clean tick spacing per range (1h→10m, 6h→1h, 24h→3h, 7d→1d).
-const TICK_STEP_MS: Record<Range, number> = { '1h': 600_000, '6h': 3_600_000, '24h': 10_800_000, '7d': 86_400_000 }
-
-function formatTick(iso: string, range: Range): string {
-  const d = new Date(iso)
-  if (range === '7d') return `${d.getMonth() + 1}/${d.getDate()}`
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
 
 export function MacResources() {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [knownAgents, setKnownAgents] = useState<string[]>([])
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
   const [range, setRange] = useState<Range>('24h')
-  const [points, setPoints] = useState<ResourcePoint[]>([])
-  const [fetchedAt, setFetchedAt] = useState(() => Date.now())
-  const [loading, setLoading] = useState(false)
+  // **Tagged with the Mac and range it was fetched for.** A response can then never be drawn under a
+  // different selection, and "loading" is just "nothing yet for this key" — so a refresh of the same key
+  // keeps the chart up instead of replacing it with a spinner every poll.
+  const [history, setHistory] = useState<{ key: string; points: ResourcePoint[] } | null>(null)
+
+  const visible = useDocumentVisible()
+  // **The window's edge is the clock, not the fetch** (#751). It was the moment the history arrived, so an
+  // open page kept that moment forever — and the space between the last tick and the edge, `now mod step`,
+  // read as an axis skewed to one side rather than as time about to arrive.
+  const now = useFlowingNow(flowIntervalMs(range), visible)
 
   const { setNode: setBreadcrumb } = useBreadcrumb()
   useEffect(() => {
@@ -83,23 +90,52 @@ export function MacResources() {
     if (!selectedAgent && allAgents.length > 0) setSelectedAgent(allAgents[0])
   }, [allAgents.join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    if (!selectedAgent) return
-    setLoading(true)
-    fetch(`/api/v1/agents/${encodeURIComponent(selectedAgent)}/resources?range=${range}`, { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data) => {
-        setPoints(data)
-        setFetchedAt(Date.now())
-      })
-      .finally(() => setLoading(false))
-  }, [selectedAgent, range])
+  const historyKey = selectedAgent ? `${selectedAgent}\n${range}` : null
 
-  const chartData = points.map((p) => ({
+  useEffect(() => {
+    if (!selectedAgent || !visible) return
+    const key = `${selectedAgent}\n${range}`
+    const controller = new AbortController()
+    let latest = 0
+    const load = () => {
+      const seq = ++latest
+      // **Checked on both paths rather than left to `fetch` to reject.** An abort that lands after the body
+      // has been read rejects nothing, and that late response is exactly the one that would draw the range
+      // the reader just left. `seq` does the same for two polls of one key answering out of order.
+      const current = () => !controller.signal.aborted && seq === latest
+      fetch(`/api/v1/agents/${encodeURIComponent(selectedAgent)}/resources?range=${range}`, {
+        credentials: 'include',
+        signal: controller.signal,
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+          return r.json() as Promise<ResourcePoint[]>
+        })
+        .then((points) => {
+          if (current()) setHistory({ key, points })
+        })
+        // A failed refresh keeps what is drawn: one dropped request emptying a monitoring chart reports an
+        // outage that did not happen. A failed *first* load still settles on the empty state.
+        .catch(() => {
+          if (current()) setHistory((prev) => (prev?.key === key ? prev : { key, points: [] }))
+        })
+    }
+    load()
+    const id = setInterval(load, HISTORY_POLL_MS[range])
+    return () => {
+      controller.abort()
+      clearInterval(id)
+    }
+  }, [selectedAgent, range, visible])
+
+  const loaded = history !== null && history.key === historyKey
+  const loading = historyKey !== null && !loaded
+  const chartData = (loaded ? history.points : []).map((p) => ({
     time: p.recorded_at,
-    cpu: Math.round(p.cpu_percent * 10) / 10,
-    mem: Math.round(p.mem_percent * 10) / 10,
+    cpu: roundPercent(p.cpu_percent),
+    mem: roundPercent(p.mem_percent),
   }))
+  const head = selectedAgent ? liveHeadFor(sessions, selectedAgent, now) : null
 
   return (
     <div className="flex h-full min-h-0">
@@ -166,13 +202,15 @@ export function MacResources() {
             {loading ? (
               <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">Loading…</div>
             ) : chartData.length === 0 ? (
+              // The live head does not stand in for an empty history: a single point draws no line, and the
+              // first stored row is at most a minute away.
               <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
                 No data yet for this range. Data is collected every minute while the agent is connected.
               </div>
             ) : (
               <div className="flex flex-col gap-6">
-                <ChartCard title="CPU %" color="cpu" data={chartData} dataKey="cpu" range={range} now={fetchedAt} />
-                <ChartCard title="RAM %" color="mem" data={chartData} dataKey="mem" range={range} now={fetchedAt} />
+                <ChartCard title="CPU %" color="cpu" data={chartData} dataKey="cpu" range={range} now={now} live={head?.cpu ?? null} />
+                <ChartCard title="RAM %" color="mem" data={chartData} dataKey="mem" range={range} now={now} live={head?.mem ?? null} />
               </div>
             )}
           </div>
@@ -183,24 +221,27 @@ export function MacResources() {
 }
 
 type Datum = { time: string; cpu: number; mem: number }
+/** A point on the line: a stored sample, or the live report at its end. */
+type Point = { t: number; v: number; live?: true }
 
 const getTime = (d: Datum) => new Date(d.time).getTime()
 
-/** The sample, in words. **One function, called by the tooltip and by `aria-valuetext`.** They used to
- *  format separately and diverged twice — a date the axis format had already truncated, then a rounding
+/** The sample's time, in words. **One function, called by the tooltip and by `aria-valuetext`.** They used
+ *  to format separately and diverged twice — a date the axis format had already truncated, then a rounding
  *  that gave the screen-reader user one digit less than the sighted one from the same cursor. The comment
  *  claiming the two agreed was the thing that was false.
  *
  *  `undefined` locale, not `'ko-KR'`: the document is `lang="en"`, an English synthesizer is handed this
  *  string, and every other date in the dashboard already follows the reader's own locale. */
-const stampOf = (d: Datum) =>
-  new Date(d.time).toLocaleString(undefined, {
+const stampOf = (t: number) =>
+  new Date(t).toLocaleString(undefined, {
     // `hourCycle`, not `hour12: false`: en-US maps that flag to h24, which speaks midnight as "24:00" —
     // an hour that is on no axis in this page. h23 is the cycle the axis labels use.
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   })
 const percentOf = (v: number) => `${Math.round(v * 10) / 10}%`
 const bisectTime = bisector<Datum, number>(getTime).left
+const bisectPoint = bisector<Point, number>((p) => p.t).left
 
 const MARGIN = { top: 8, right: 24, bottom: 24, left: 40 }
 // Headroom above the 100% line, so its label is not cut off by the top of the plot. **Vertical only.**
@@ -208,6 +249,14 @@ const MARGIN = { top: 8, right: 24, bottom: 24, left: 40 }
 // ends — a strip the gridlines frame and no sample can ever reach, which reads as missing data for
 // the same reason the axis running past `now` did.
 const INSET = 16
+// The live dot's outer ring. The dot is centred on the plot's right edge, so the hover surface reaches this
+// far past it — otherwise half of the one thing to hover would not answer.
+const HEAD_RING_R = 6
+// How far past an edge a tick is still drawn: half a label ("00:00" at 11px), while some of it overlaps the plot.
+const LABEL_HALF_PX = 20
+// The fade at each end of the time axis. Wider than half a label, so a label crossing an edge is already faint
+// before the mask starts cutting it.
+const AXIS_FADE_PX = 40
 
 function ChartCard({
   title,
@@ -216,6 +265,7 @@ function ChartCard({
   dataKey,
   range,
   now,
+  live,
 }: {
   title: string
   color: keyof typeof chartConfig
@@ -223,6 +273,7 @@ function ChartCard({
   dataKey: 'cpu' | 'mem'
   range: Range
   now: number
+  live: number | null
 }) {
   const hex = chartConfig[color].color
 
@@ -239,7 +290,7 @@ function ChartCard({
         <ParentSize>
           {({ width, height }) =>
             width > 0 && height > 0 ? (
-              <AreaChartInner width={width} height={height} data={data} dataKey={dataKey} hex={hex} range={range} now={now} label={title} />
+              <AreaChartInner width={width} height={height} data={data} dataKey={dataKey} hex={hex} range={range} now={now} live={live} label={title} />
             ) : null
           }
         </ParentSize>
@@ -258,6 +309,7 @@ export function AreaChartInner({
   hex,
   range,
   now,
+  live = null,
   label,
 }: {
   width: number
@@ -267,23 +319,25 @@ export function AreaChartInner({
   hex: string
   range: Range
   now: number
+  /** The agent's latest report for this series, not yet stored. Drawn at the end of the line, and the last
+   *  stop of the reading. */
+  live?: number | null
   label: string
 }) {
-  const { showTooltip, hideTooltip, tooltipData, tooltipLeft, tooltipTop } = useTooltip<Datum>()
   const hintId = `chart-hint-${dataKey}`
-  // **Its own state, not a view of `tooltipData`.** Derived, every path that hides the reading — Escape,
+  // **Its own state, not a view of the tooltip.** Derived, every path that hides the reading — Escape,
   // blur — snapped the announced value back to the last sample: a change the user never made, and the next
   // arrow key resumed from the end rather than where they were reading.
-  // `null` until the reader places it, which is not the same as 0: an unplaced cursor should open at the
-  // newest sample, and a placed one should still be there after Escape or a blur. Focus used to jump to
-  // the end unconditionally, so leaving and returning silently moved the reader to the other end of the
-  // series and the next arrow key stepped from there.
-  const [cursor, setCursor] = useState<number | null>(null)
-  // Clamped on render: switching 7d → 1h shrinks `data` under a cursor that was valid, which left
-  // `aria-valuenow` above `aria-valuemax` and `aria-valuetext` undefined — a slider announcing a bare
-  // out-of-range index instead of a reading.
-  const last = Math.max(0, data.length - 1)
-  const idx = cursor === null ? last : Math.min(cursor, last)
+  // `null` until the reader places it, which is not the same as the oldest sample: an unplaced cursor should
+  // open at the newest point, and a placed one should still be there after Escape or a blur. Focus used to
+  // jump to the end unconditionally, so leaving and returning silently moved the reader to the other end of
+  // the series and the next arrow key stepped from there.
+  // **A timestamp, not an index.** The history refreshes under a reader while the window advances, and an
+  // index moved the reading one sample newer for every row that aged out of the left edge. **`'live'` for
+  // the live value**, which has no time of its own to hold on to — it moves with `now`, and a reader who
+  // chose it should stay on it while rows are stored behind it.
+  const [cursor, setCursor] = useState<number | 'live' | null>(null)
+  const [readingShown, setReadingShown] = useState(false)
 
   const innerW = width - MARGIN.left - MARGIN.right
   const innerH = height - MARGIN.top - MARGIN.bottom
@@ -292,47 +346,83 @@ export function AreaChartInner({
   // up to the next clean step (`ceil(now / step) * step`) kept the tick times round at the cost of up to a
   // full step of axis that no sample can ever reach: an hour of empty 6h chart, and 63px of 504 on 7d.
   // Empty because it has not happened yet, which reads as a gap in the data rather than as the edge.
-  const step = TICK_STEP_MS[range]
   const maxT = now
   const minT = maxT - RANGE_MS[range]
   const xScale = scaleTime({ domain: [minT, maxT], range: [0, Math.max(0, innerW)] })
   const yScale = scaleLinear({ domain: [0, 100], range: [innerH, INSET] })
-  // Counted down from the last round step at or before `now`, so the ticks stay on clean times without
-  // the window following them into the future. Ticks span the whole window regardless of where data
-  // exists. **Round in UTC**, which `formatTick` then renders locally — so the labels read 23:50 only
-  // where the offset is a whole multiple of the step, and 07:45 in a 45-minute zone.
-  const lastTick = Math.floor(maxT / step) * step
-  const tickCount = Math.floor((lastTick - minT) / step) + 1
-  const ticks = Array.from({ length: tickCount }, (_, i) => new Date(lastTick - (tickCount - 1 - i) * step))
+  // Every local boundary whose label overlaps the plot, whether or not data exists there. **Past the window,
+  // not just inside it**: its span is a whole number of steps, so a tick just inside one edge always has a
+  // twin just outside the other, and drawing only the inside ones left the left edge looking empty while
+  // the right one faded. The axis mask cuts and fades whatever reaches past the plot. See `TICK_INTERVAL`
+  // for why local, and why a DST day is allowed to space them unevenly.
+  const labelReachMs = innerW > 0 ? (LABEL_HALF_PX / innerW) * RANGE_MS[range] : 0
+  const ticks = localTicks(minT - labelReachMs, maxT + labelReachMs, range)
+  const axisFade = innerW > 0 ? Math.min(0.5, AXIS_FADE_PX / innerW) : 0
 
   const gradId = `fill-${dataKey}`
   const clipId = `plot-${dataKey}`
+  const axisMaskId = `axis-fade-${dataKey}`
 
-  /** Show the sample at `i`, the way a pointer move would. The keyboard path lands here too. */
+  const latest = data[data.length - 1]
+  // **The live report closes the gap between the newest stored row and `now`.** The relay stores one
+  // averaged row a minute, so with the window's edge on `now` the line would stop up to a minute short —
+  // ~8px on 1h — and catch up once a minute.
+  // Placed at `now` on the browser's clock, but never left of the newest row, which carries the relay's: a
+  // relay running ahead would otherwise bend the monotone curve back on itself. That position is also its
+  // date in the reading, like any other point's: the moment it is drawn at, never before the row behind it.
+  const liveHead: Point | null =
+    live !== null && latest ? { t: Math.max(maxT, getTime(latest) + 1), v: live, live: true } : null
+  // What is drawn and what is read are one list, so the pointer, the keyboard and the line end at the same
+  // point. Stored rows keep their `data` index; the live head, when there is one, is appended.
+  const line: Point[] = data.map((d) => ({ t: getTime(d), v: d[dataKey] }))
+  if (liveHead) line.push(liveHead)
+  // Kept on the plot: the dot marks now, which is the right edge, and a relay-ahead head lands just beyond it.
+  const xIn = (t: number) => Math.min(xScale(t), innerW)
+  const headX = liveHead ? xIn(liveHead.t) : 0
+  const headY = liveHead ? yScale(liveHead.v) : 0
+
+  // Clamped on render: switching 7d → 1h shrinks `data` under a cursor that was valid, which left
+  // `aria-valuenow` above `aria-valuemax` and `aria-valuetext` undefined — a slider announcing a bare
+  // out-of-range index instead of a reading. A sample that aged out resolves to the oldest one remaining,
+  // and a live value that went away to the newest stored row.
+  const lastStored = Math.max(0, data.length - 1)
+  const idx =
+    cursor === null ? Math.max(0, line.length - 1)
+    : cursor === 'live' ? (liveHead ? line.length - 1 : lastStored)
+    : Math.min(bisectTime(data, cursor), lastStored)
+
+  const tooltipData = readingShown ? line[idx] : undefined
+  // **Placed from the point on every render, not stored when the reading opened.** The window moves under
+  // an open reading, and a stored position left the guide line where the sample used to be.
+  const tooltipLeft = tooltipData ? xIn(tooltipData.t) : 0
+  const tooltipTop = tooltipData ? yScale(tooltipData.v) : 0
+
+  /** Show the point at `i`, the way a pointer move would. The keyboard path lands here too. */
   const showAt = (i: number) => {
-    const d = data[i]
-    if (!d) return
-    setCursor(i)
-    showTooltip({ tooltipData: d, tooltipLeft: xScale(getTime(d)), tooltipTop: yScale(d[dataKey]) })
+    const p = line[i]
+    if (!p) return
+    setCursor(p.live ? 'live' : p.t)
+    setReadingShown(true)
   }
+  const hideReading = () => setReadingShown(false)
 
   // **The values in this chart were mouse-only.** The tooltip is the only place a reading is written down,
   // and it opened on `mousemove` alone — so a keyboard user could reach the page and read nothing from it.
-  // Arrow keys walk the samples, Home/End jump to the ends, and the focused reading is announced through
-  // the live region below rather than inferred from a tooltip nobody can see.
+  // Arrow keys walk the points, Home/End jump to the ends, and the focused reading is announced through
+  // `aria-valuetext` rather than inferred from a tooltip nobody can see.
   const handleKey = (e: React.KeyboardEvent<SVGRectElement>) => {
-    if (data.length === 0) return
+    if (line.length === 0) return
     // Dismissible without moving focus (WCAG 1.4.13): the reading overlays the plot, and a magnifier user
     // whose view it covers should not have to tab away to clear it.
-    if (e.key === 'Escape') { hideTooltip(); return }
+    if (e.key === 'Escape') { hideReading(); return }
     // Vertical arrows too: they are half of the slider pattern's key set, and a screen-reader user in
     // focus mode reaches for them as readily as the horizontal pair.
     const current = idx
     const next =
       e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? Math.max(0, current - 1)
-      : e.key === 'ArrowRight' || e.key === 'ArrowUp' ? Math.min(data.length - 1, current + 1)
+      : e.key === 'ArrowRight' || e.key === 'ArrowUp' ? Math.min(line.length - 1, current + 1)
       : e.key === 'Home' ? 0
-      : e.key === 'End' ? data.length - 1
+      : e.key === 'End' ? line.length - 1
       : null
     if (next === null) return
     e.preventDefault()
@@ -343,22 +433,24 @@ export function AreaChartInner({
     const point = localPoint(e)
     if (!point) return
     const t0 = xScale.invert(point.x - MARGIN.left).getTime()
-    const i = bisectTime(data, t0)
-    const lo = data[i - 1]
-    const hi = data[i]
-    const d = lo && hi ? (t0 - getTime(lo) < getTime(hi) - t0 ? lo : hi) : (lo ?? hi)
-    if (!d) return
+    const i = bisectPoint(line, t0)
+    const lo = line[i - 1]
+    const hi = line[i]
+    const p = lo && hi ? (t0 - lo.t < hi.t - t0 ? lo : hi) : (lo ?? hi)
+    if (!p) return
     // Through `showAt`, so the cursor is the one source of position. Calling `showTooltip` directly here
     // moved what is drawn while `aria-valuenow` kept reporting the keyboard's index — the slider's state
     // then described something other than what it was showing.
-    showAt(data.indexOf(d))
+    showAt(line.indexOf(p))
   }
 
-  const latest = data[data.length - 1]
   // Named, because the page renders two of these side by side — an unattributed "02:50, 57%" does not say
-  // which chart answered. The rest comes from `stampOf`/`percentOf`, which the visible tooltip also calls:
-  // this is the only reading AT gets, since that tooltip is `aria-hidden`, so the two must not drift.
-  const reading = (d: Datum) => `${label}, ${stampOf(d)}, ${percentOf(d[dataKey])}`
+  // which chart answered. Named by the series, not the card title: the title is "CPU %", and the value
+  // already carries the unit, so the title printed it twice. The rest comes from `stampOf`/`percentOf`,
+  // which the visible tooltip also calls: this is the only reading AT gets, since that tooltip is
+  // `aria-hidden`, so the two must not drift.
+  const series = chartConfig[dataKey].label
+  const reading = (p: Point) => `${series}, ${stampOf(p.t)}, ${percentOf(p.v)}`
 
   return (
     <>
@@ -370,9 +462,13 @@ export function AreaChartInner({
         height={height}
         role="group"
         aria-label={
-          latest
-            ? `${label}, last ${range}. Latest ${percentOf(latest[dataKey])}.`
-            : `${label}, last ${range}. No samples.`
+          // The live value is announced here: the dot that marks it is `aria-hidden`, and no value is printed
+          // on the plot, so this is where AT hears it on the way in.
+          liveHead
+            ? `${label}, last ${range}. Now ${percentOf(liveHead.v)}.`
+            : latest
+              ? `${label}, last ${range}. Latest ${percentOf(latest[dataKey])}.`
+              : `${label}, last ${range}. No samples.`
         }
       >
         <LinearGradient id={gradId} from={hex} to={hex} fromOpacity={0.3} toOpacity={0} fromOffset="5%" toOffset="95%" />
@@ -387,42 +483,60 @@ export function AreaChartInner({
         <clipPath id={clipId}>
           <rect x={0} y={0} width={Math.max(0, innerW)} height={Math.max(0, innerH)} />
         </clipPath>
+        {/* The time axis is seen through this: clear across the plot, fading to nothing over the last
+            `AXIS_FADE_PX` at each end, and nothing at all past them — so a label straddling an edge is cut and
+            faded glyph by glyph, and none can paint over the y-axis labels. `userSpaceOnUse` throughout, so it
+            is laid out in the plot's own coordinates, those of the group that references it. */}
+        <linearGradient id={`${axisMaskId}-grad`} gradientUnits="userSpaceOnUse" x1={0} y1={0} x2={Math.max(0, innerW)} y2={0}>
+          <stop offset={0} stopColor="white" stopOpacity={0} />
+          <stop offset={axisFade} stopColor="white" stopOpacity={1} />
+          <stop offset={1 - axisFade} stopColor="white" stopOpacity={1} />
+          <stop offset={1} stopColor="white" stopOpacity={0} />
+        </linearGradient>
+        <mask id={axisMaskId} maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x={0} y={innerH} width={Math.max(0, innerW)} height={MARGIN.bottom * 2}>
+          <rect x={0} y={innerH} width={Math.max(0, innerW)} height={MARGIN.bottom * 2} fill={`url(#${axisMaskId}-grad)`} />
+        </mask>
         <Group left={MARGIN.left} top={MARGIN.top}>
           <GridRows scale={yScale} width={innerW} tickValues={[0, 25, 50, 75, 100]} strokeDasharray="3 3" stroke="hsl(var(--border))" />
           <g clipPath={`url(#${clipId})`}>
-            <AreaClosed<Datum>
-              data={data}
-              x={(d) => xScale(getTime(d))}
-              y={(d) => yScale(d[dataKey])}
+            <AreaClosed<Point>
+              data={line}
+              x={(p) => xScale(p.t)}
+              y={(p) => yScale(p.v)}
               yScale={yScale}
               curve={curveMonotoneX}
               fill={`url(#${gradId})`}
             />
-            <LinePath<Datum>
-              data={data}
-              x={(d) => xScale(getTime(d))}
-              y={(d) => yScale(d[dataKey])}
+            <LinePath<Point>
+              data={line}
+              x={(p) => xScale(p.t)}
+              y={(p) => yScale(p.v)}
               curve={curveMonotoneX}
               stroke={hex}
               strokeWidth={1.5}
             />
           </g>
-          <AxisBottom
-            top={innerH}
-            scale={xScale}
-            tickValues={ticks}
-            tickFormat={(v) => formatTick(new Date(+v).toISOString(), range)}
-            hideAxisLine
-            hideTicks
-            tickLength={0}
-            tickLabelProps={(_v, index, all) => ({
-              fontSize: 11,
-              fill: 'currentColor',
-              textAnchor: index === 0 ? 'start' : index === all.length - 1 ? 'end' : 'middle',
-              dy: 6,
-              className: 'fill-muted-foreground',
-            })}
-          />
+          <g mask={`url(#${axisMaskId})`}>
+            <AxisBottom
+              top={innerH}
+              scale={xScale}
+              tickValues={ticks}
+              tickFormat={(v) => formatTick(+v, range)}
+              hideAxisLine
+              hideTicks
+              tickLength={0}
+              tickLabelProps={() => ({
+                fontSize: 11,
+                fill: 'currentColor',
+                // **Centred, and left to the mask at both edges** rather than anchored inward. The window
+                // advances, so ticks enter on the right and leave on the left; anchored `end`/`start`, the
+                // outermost label jumped half its width each time one crossed.
+                textAnchor: 'middle',
+                dy: 6,
+                className: 'fill-muted-foreground',
+              })}
+            />
+          </g>
           <AxisLeft
             scale={yScale}
             tickValues={[0, 25, 50, 75, 100]}
@@ -431,42 +545,54 @@ export function AreaChartInner({
             hideTicks
             tickLabelProps={() => ({ fontSize: 11, fill: 'currentColor', textAnchor: 'end', dx: -4, dy: 3, className: 'fill-muted-foreground' })}
           />
+          {liveHead && (
+            // **A dot, and no value beside it.** A printed value is a second rendering of what hovering the dot
+            // shows, in a box that looks like the tooltip without behaving like one — the reading is the one
+            // place a value is written.
+            <g className="live-head" aria-hidden="true" pointerEvents="none">
+              <circle cx={headX} cy={headY} r={HEAD_RING_R} fill={hex} fillOpacity={0.2} />
+              <circle cx={headX} cy={headY} r={3} fill={hex} stroke="hsl(var(--background))" strokeWidth={1.5} />
+            </g>
+          )}
           {tooltipData && (
-            <g style={{ transition: 'transform 0.25s ease-out', transform: `translateX(${tooltipLeft ?? 0}px)` }} pointerEvents="none">
+            <g style={{ transition: 'transform 0.25s ease-out', transform: `translateX(${tooltipLeft}px)` }} pointerEvents="none">
               <Line from={{ x: 0, y: INSET }} to={{ x: 0, y: innerH }} stroke="hsl(var(--border))" strokeWidth={1} />
-              <circle cx={0} cy={0} r={3} fill={hex} stroke="hsl(var(--background))" strokeWidth={1.5} style={{ transition: 'transform 0.25s ease-out', transform: `translateY(${tooltipTop ?? 0}px)` }} />
+              <circle cx={0} cy={0} r={3} fill={hex} stroke="hsl(var(--background))" strokeWidth={1.5} style={{ transition: 'transform 0.25s ease-out', transform: `translateY(${tooltipTop}px)` }} />
             </g>
           )}
           <Bar
             x={0}
             y={0}
-            width={Math.max(0, innerW)}
+            width={Math.max(0, innerW) + HEAD_RING_R}
             height={Math.max(0, innerH)}
             fill="transparent"
             tabIndex={0}
-            // **`slider`, over the sample index.** `img` was worse than useless here: a non-widget role
-            // leaves NVDA and JAWS in browse mode, where the virtual cursor swallows the arrow keys before
-            // `onKeyDown` sees them — the keyboard path would exist for exactly the users who could not
-            // reach it. A slider's native key model *is* arrow keys, and `aria-valuetext` speaks the
-            // reading on every move, which is why there is no live region here any more.
+            // **`slider`, over the points drawn — the live value last.** `img` was worse than useless here: a
+            // non-widget role leaves NVDA and JAWS in browse mode, where the virtual cursor swallows the arrow
+            // keys before `onKeyDown` sees them — the keyboard path would exist for exactly the users who
+            // could not reach it. A slider's native key model *is* arrow keys, and `aria-valuetext` speaks
+            // the reading on every move, which is why there is no live region here any more.
+            // The live value was once left off, so its reading could not change under a reader parked on it.
+            // That made the newest thing drawn the one thing nobody could read, and a reader who moves to
+            // "now" is asking for the value that changes.
             role="slider"
             aria-label={`${label} samples`}
             aria-valuemin={0}
-            aria-valuemax={Math.max(0, data.length - 1)}
+            aria-valuemax={Math.max(0, line.length - 1)}
             aria-valuenow={idx}
-            aria-valuetext={data[idx] ? reading(data[idx]!) : undefined}
+            aria-valuetext={line[idx] ? reading(line[idx]!) : undefined}
             aria-describedby={hintId}
             // No inline `outlineColor`: `outline-none` is a *transparent* 2px outline, so colouring it
             // here painted a black box around the plot at rest. The colour belongs in the focus variant.
             className="outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             onFocus={() => showAt(idx)}
-            onBlur={hideTooltip}
+            onBlur={hideReading}
             onKeyDown={handleKey}
             onMouseMove={handleMove}
-            onMouseLeave={hideTooltip}
+            onMouseLeave={hideReading}
             onTouchMove={handleMove}
-            onTouchEnd={hideTooltip}
-            onTouchCancel={hideTooltip}
+            onTouchEnd={hideReading}
+            onTouchCancel={hideReading}
           />
         </Group>
       </svg>
@@ -479,16 +605,15 @@ export function AreaChartInner({
           className="pointer-events-none absolute top-0 left-0 whitespace-nowrap rounded-lg border bg-background px-3 py-2 text-xs text-foreground shadow-md"
           style={{
             // transform (not left/top) so position eases smoothly like recharts
-            transform: `translate(${(tooltipLeft ?? 0) + MARGIN.left}px, ${(tooltipTop ?? 0) + MARGIN.top}px) translate(${(tooltipLeft ?? 0) > innerW * 0.6 ? 'calc(-100% - 12px)' : '12px'}, -50%)`,
+            transform: `translate(${tooltipLeft + MARGIN.left}px, ${tooltipTop + MARGIN.top}px) translate(${tooltipLeft > innerW * 0.6 ? 'calc(-100% - 12px)' : '12px'}, -50%)`,
             transition: 'transform 0.25s ease-out',
           }}
         >
           <p className="mb-1">
-            Date:{' '}
-            {stampOf(tooltipData)}
+            Date: {stampOf(tooltipData.t)}
           </p>
           <p>
-            {label}: {percentOf(tooltipData[dataKey])}
+            {series}: {percentOf(tooltipData.v)}
           </p>
         </div>
       )}

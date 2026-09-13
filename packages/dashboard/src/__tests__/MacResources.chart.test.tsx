@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
 import { AreaChartInner } from '@/src/pages/MacResources'
 
@@ -74,7 +74,32 @@ describe('the chart does not draw time that has not arrived', () => {
   // The plot's full width: the window's edges are the grid's edges, with no horizontal padding
   // between them. `INSET` is vertical headroom only.
   const RIGHT_EDGE = 600 - 40 - 24 // width - MARGIN.left - MARGIN.right
+  /** How far past an edge a tick is still drawn: half a label, while some of it overlaps the plot. */
+  const LABEL_HALF = 20
   const STEP: Record<string, number> = { '1h': 600_000, '6h': 3_600_000, '24h': 10_800_000, '7d': 86_400_000 }
+
+  // **Pinned to a whole-hour zone with no DST**, so `span / STEP` ticks is exact and the anchor below has
+  // one right answer. What happens in 45-minute zones and across DST is `resourceChart.test.ts`.
+  const ORIGINAL_TZ = process.env.TZ
+  beforeAll(() => { process.env.TZ = 'Asia/Seoul' })
+  afterAll(() => {
+    if (ORIGINAL_TZ === undefined) delete process.env.TZ
+    else process.env.TZ = ORIGINAL_TZ
+  })
+
+  /** The last local step boundary at or before `t`, from `Date` setters — deliberately not `d3-time`, so
+   *  the assertion does not share an implementation with the code it checks. */
+  const lastLocalBoundary = (t: number, range: string) => {
+    const d = new Date(t)
+    d.setSeconds(0, 0)
+    if (range === '1h') d.setMinutes(Math.floor(d.getMinutes() / 10) * 10)
+    else {
+      d.setMinutes(0)
+      if (range === '24h') d.setHours(Math.floor(d.getHours() / 3) * 3)
+      if (range === '7d') d.setHours(0)
+    }
+    return d.getTime()
+  }
 
   // Off every step boundary. On one, `ceil` and `floor` agree and the defect hides.
   const NOW = Date.parse('2026-08-18T02:55:00.000Z') + 61_000
@@ -105,15 +130,17 @@ describe('the chart does not draw time that has not arrived', () => {
 
     // **The tick arithmetic itself, which the label assertions cannot reach.** Every candidate tick is a
     // round step, so `tickCount ± 1` changes no label's shape and no format check can see it — measured,
-    // `+ 2` and one fewer each left all 34 tests green. One tick too many puts the first label at
-    // x = -34 with `text-anchor: start`, painted across the y-axis labels: the defect the first block of
-    // this file exists to prevent, arriving through the axis instead of through the series.
+    // `+ 2` and one fewer each left all 34 tests green.
+    // A tick past either edge is drawn while its label still overlaps the plot, and no further: the axis
+    // is masked to the plot's width, and a tick beyond that reach is one that once put a label at x = -34
+    // across the y-axis labels.
     const tickX = tickXs(container)
-    expect(tickX.length, 'a tick was invented or dropped').toBe(span / STEP[range])
-    expect(Math.min(...tickX), 'a tick fell left of the plot').toBeGreaterThanOrEqual(0)
-    expect(Math.max(...tickX), 'a tick fell right of the plot').toBeLessThanOrEqual(RIGHT_EDGE)
-    expect(tickX[tickX.length - 1], 'the newest tick is not the last round step at or before `now`')
-      .toBeCloseTo(xOf(Math.floor(NOW / STEP[range]) * STEP[range], span), 3)
+    const inside = tickX.filter((x) => x >= 0 && x <= RIGHT_EDGE)
+    expect(inside.length, 'a tick was invented or dropped').toBe(span / STEP[range])
+    expect(Math.min(...tickX), 'a tick was drawn after its label left the plot').toBeGreaterThanOrEqual(-LABEL_HALF)
+    expect(Math.max(...tickX), 'a tick was drawn before its label reached the plot').toBeLessThanOrEqual(RIGHT_EDGE + LABEL_HALF)
+    expect(inside[inside.length - 1], 'the newest tick is not the last local boundary at or before `now`')
+      .toBeCloseTo(xOf(lastLocalBoundary(NOW, range), span), 3)
   })
 
   it('fills the grid it is drawn in, at both ends', () => {
@@ -147,12 +174,9 @@ describe('the chart does not draw time that has not arrived', () => {
     // dropping the round-up and letting the ticks fall where the window ends would trade this defect for
     // an axis reading 14:03, 14:13, 14:23.
     //
-    // **Measured on the geometry, not on the digits.** `lastTick` is round in UTC and `formatTick` renders
-    // local hours, so clean labels hold only where the offset is a whole multiple of the step. Asserting
-    // the digits made this file red on an unmodified checkout in Asia/Kathmandu and Pacific/Chatham — a
-    // 45-minute zone reads 07:45, 07:55 — with nothing to say the cause was the machine's clock rather
-    // than the code. Even spacing and a round anchor are the same claim about the code and no claim at
-    // all about the reader's timezone.
+    // **Measured on the geometry, in a pinned zone.** The ticks used to be round in UTC, and asserting
+    // digits made this file red on an unmodified checkout in Asia/Kathmandu — the machine's clock decided
+    // the result. They are local now (#749), so the zone is part of the input and this block names one.
     const data = Array.from({ length: 12 }, (_, i) => ({
       time: new Date(NOW - (11 - i) * (3_600_000 / 11)).toISOString(),
       cpu: 20,
@@ -169,7 +193,198 @@ describe('the chart does not draw time that has not arrived', () => {
       expect(x - tickX[i], 'the ticks are no longer a whole step apart').toBeCloseTo(perStep, 3)
     }
     expect(tickX[tickX.length - 1], 'the ticks are evenly spaced but off the round step')
-      .toBeCloseTo(xOf(Math.floor(NOW / STEP['1h']) * STEP['1h'], 3_600_000), 3)
+      .toBeCloseTo(xOf(lastLocalBoundary(NOW, '1h'), 3_600_000), 3)
+  })
+
+  it('lets a label straddle either edge and fades the axis there, the same on both sides', () => {
+    // The window advances, so a tick enters on the right and leaves on the left. The window's span is a
+    // whole number of steps, so a tick just inside one edge always has a twin just *outside* the other:
+    // drawing only the ticks inside the window showed a label fading at the right edge while its twin on
+    // the left had already vanished — the left edge always looked empty.
+    // So a tick is drawn while its label overlaps the plot, and the fade is a mask over the axis rather than
+    // an opacity per label: a straddling label is cut and faded glyph by glyph, and nothing past the
+    // plot's width can paint over the y-axis labels.
+    const onBoundary = Date.parse('2026-08-18T03:00:00.000Z') // 12:00 KST
+    const data = [{ time: new Date(onBoundary - 60_000).toISOString(), cpu: 20, mem: 57 }]
+    const perMinute = RIGHT_EDGE / 60
+    const labels = (now: number) => {
+      const { container, unmount } = render(
+        <AreaChartInner width={600} height={220} data={data} dataKey="cpu" hex="#60a5fa" range="1h" now={now} label="CPU %" />,
+      )
+      const out = [...container.querySelectorAll('.visx-axis-bottom text')].map((t) => ({
+        text: t.textContent,
+        x: Number(t.getAttribute('x')),
+        anchor: t.getAttribute('text-anchor'),
+      }))
+      const masked = container.querySelector('.visx-axis-bottom')?.closest('g[mask]')?.getAttribute('mask') ?? ''
+      const mask = container.querySelector(`mask#${/url\(#([^)]+)\)/.exec(masked)?.[1] ?? 'none'}`)
+      // By id, not by `linearGradient`: jsdom's selector engine lowercases type selectors, and SVG's
+      // mixed-case element names then match nothing — an empty list that would pass any `every` check.
+      const gradientId = /url\(#([^)]+)\)/.exec(mask?.querySelector('rect')?.getAttribute('fill') ?? '')?.[1] ?? 'none'
+      const stops = [...(container.querySelector(`[id="${gradientId}"]`)?.querySelectorAll('stop') ?? [])]
+        .map((s) => Number(s.getAttribute('stop-opacity')))
+      const region = mask?.querySelector('rect')
+      unmount()
+      return { out, mask, stops, region }
+    }
+
+    // A minute past 12:00: 11:00 has just left on the left, 12:00 has just arrived on the right.
+    const { out, mask, stops, region } = labels(onBoundary + 60_000)
+    const left = out.find((l) => l.text === '11:00')
+    const right = out.find((l) => l.text === '12:00')
+    expect(left, 'the label leaving on the left was not drawn').toBeDefined()
+    expect(right, 'the label arriving on the right was not drawn').toBeDefined()
+    expect(left!.x).toBeCloseTo(-perMinute, 3)
+    expect(right!.x).toBeCloseTo(RIGHT_EDGE - perMinute, 3)
+    for (const l of out) expect(l.anchor, 'an edge label is still anchored inward').toBe('middle')
+
+    expect(mask, 'the axis is not masked').not.toBeNull()
+    expect(region?.getAttribute('x'), 'the mask does not start at the plot').toBe('0')
+    expect(Number(region?.getAttribute('width')), 'the mask is not the plot\'s width').toBe(RIGHT_EDGE)
+    expect(stops, 'the mask does not fade out at both ends and stay clear between').toEqual([0, 1, 1, 0])
+
+    // Three minutes past, 11:00 is ~25px outside — its whole label is off the plot, so it is not drawn.
+    expect(labels(onBoundary + 180_000).out.find((l) => l.text === '11:00'), 'a label wholly off the plot was drawn').toBeUndefined()
+  })
+})
+
+describe('the line reaches now through the live sample', () => {
+  // The relay writes one averaged row a minute, so the newest stored row trails `now` by up to a minute —
+  // ~8px on the 1h range. With the window's edge pinned to `now` that reads as a line that stops early
+  // and catches up once a minute. The agent's latest report closes the gap without being stored.
+  const RIGHT_EDGE = 600 - 40 - 24
+  const NOW = AT + 61_000
+  const flushed = Array.from({ length: 12 }, (_, i) => ({
+    time: new Date(NOW - 45_000 - (11 - i) * 300_000).toISOString(),
+    cpu: 20,
+    mem: 57,
+  }))
+  type Props = Partial<Parameters<typeof AreaChartInner>[0]>
+  const element = (props: Props = {}) =>
+    <AreaChartInner width={600} height={220} data={flushed} dataKey="cpu" hex="#60a5fa" range="1h" now={NOW} label="CPU %" {...props} />
+  const chart = (props: Props = {}) => render(element(props))
+  /** Every segment's end x, `C` included — `xs` above reads `M`/`L` only, which a monotone line barely has. */
+  const endXs = (d: string) =>
+    [...d.matchAll(/[MLC]([^MLCZ]+)/g)].map((m) => {
+      const n = m[1]!.trim().split(/[\s,]+/).map(Number)
+      return n[n.length - 2]!
+    })
+  const lineOf = (c: HTMLElement) => c.querySelectorAll('g[clip-path] path')[1]?.getAttribute('d') ?? ''
+
+  it('stops short of the edge without one — the premise', () => {
+    const { container } = chart()
+    expect(Math.max(...endXs(lineOf(container)))).toBeLessThan(RIGHT_EDGE - 1)
+    expect(container.querySelector('.live-head')).toBeNull()
+  })
+
+  it('reaches the right edge with one, and marks where it ends', () => {
+    const { container } = chart({ live: 42.3 })
+    expect(Math.max(...endXs(lineOf(container)))).toBeCloseTo(RIGHT_EDGE, 3)
+    expect(container.querySelector('.live-head circle'), 'no dot for the live value').not.toBeNull()
+  })
+
+  it('never draws the line backwards when the relay clock is ahead of the browser', () => {
+    // The newest row carries the relay's clock and `now` is the browser's. A relay 30s ahead stores a row
+    // "after" now, and a head placed at `now` would sit left of it — a monotone curve doubling back.
+    const ahead = flushed.map((d) => ({ ...d, time: new Date(Date.parse(d.time) + 75_000).toISOString() }))
+    const { container } = chart({ data: ahead, live: 50 })
+    const x = endXs(lineOf(container))
+    for (const [i, v] of x.slice(1).entries()) expect(v, 'the line turned back on itself').toBeGreaterThanOrEqual(x[i]!)
+    const dot = container.querySelector('.live-head circle')
+    expect(Number(dot?.getAttribute('cx')), 'the dot left the plot').toBeLessThanOrEqual(RIGHT_EDGE)
+  })
+
+  it('prints the live value nowhere on the plot, and carries it in the reading instead', () => {
+    // A value printed beside the dot is a second rendering of what hovering the dot shows, in a box that
+    // looks like the tooltip without behaving like one. The dot marks now; the reading — the tooltip, and
+    // the chart's name for AT — is the one place the value is written.
+    const { container } = chart({ live: 57.4 })
+    const head = container.querySelector('.live-head')!
+    expect(head.getAttribute('aria-hidden')).toBe('true')
+    expect(head.textContent, 'the live value is printed on the plot').toBe('')
+    expect(container.querySelector('svg')!.getAttribute('aria-label')).toBe('CPU %, last 1h. Now 57.4%.')
+  })
+
+  describe('as the last stop of the reading', () => {
+    // Pointer and keyboard share one cursor, and the live value is where both of them end. Left off, the
+    // newest thing drawn was the one thing nobody could read: hovering the dot at the right edge snapped the
+    // reading to a stored row up to a minute older than it.
+    const surfaceOf = (c: HTMLElement) => c.querySelector('rect[role="slider"]')!
+    const tooltipText = (c: HTMLElement) => c.querySelector('[class*="pointer-events-none"]')?.textContent ?? ''
+    const newerRow = { time: new Date(NOW - 5_000).toISOString(), cpu: 30, mem: 57 }
+    /** The reading's date, written out here rather than imported, so a change to the page's format is a
+     *  change this file has to agree with. */
+    const stampAt = (t: number) =>
+      new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+
+    it('is where the pointer lands at the right edge, dated at the moment it is drawn', () => {
+      // Dated like every other point, at its own position — which is `now`. The newest stored row is 45s
+      // older and in the previous minute, so a reading that borrowed its date would show here.
+      const { container } = chart({ live: 57.4 })
+      fireEvent.mouseMove(surfaceOf(container), { clientX: 40 + RIGHT_EDGE, clientY: 50 })
+      expect(surfaceOf(container).getAttribute('aria-valuenow'), 'the pointer snapped to a stored row').toBe(String(flushed.length))
+      expect(stampAt(NOW), 'the premise: now and the newest row fall in different minutes')
+        .not.toBe(stampAt(Date.parse(flushed[flushed.length - 1]!.time)))
+      expect(tooltipText(container)).toBe(`Date: ${stampAt(NOW)}CPU: 57.4%`)
+    })
+
+    it('answers the pointer over the whole dot, including the half past the plot edge', () => {
+      // The dot is centred on the plot's right edge, so a hover surface that stops at the edge leaves half
+      // of the one thing to hover unresponsive.
+      const { container } = chart({ live: 57.4 })
+      const surface = surfaceOf(container)
+      expect(Number(surface.getAttribute('width')), 'the hover surface stops halfway across the dot')
+        .toBeGreaterThanOrEqual(RIGHT_EDGE + Number(container.querySelector('.live-head circle')!.getAttribute('r')))
+      fireEvent.mouseMove(surface, { clientX: 40 + RIGHT_EDGE + 5, clientY: 50 })
+      expect(tooltipText(container)).toContain(`Date: ${stampAt(NOW)}`)
+    })
+
+    it('is where End lands, and what the slider announces there', () => {
+      const { container } = chart({ live: 57.4 })
+      const surface = surfaceOf(container)
+      expect(surface.getAttribute('aria-valuemax')).toBe(String(flushed.length))
+      fireEvent.focus(surface)
+      fireEvent.keyDown(surface, { key: 'Home' })
+      fireEvent.keyDown(surface, { key: 'End' })
+      expect(surface.getAttribute('aria-valuetext')).toBe(`CPU, ${stampAt(NOW)}, 57.4%`)
+    })
+
+    it('keeps a reader on now when a stored row arrives, and follows the value as it changes', () => {
+      const { container, rerender } = chart({ live: 57.4 })
+      fireEvent.focus(surfaceOf(container))
+      fireEvent.keyDown(surfaceOf(container), { key: 'End' })
+
+      rerender(element({ data: [...flushed, newerRow], live: 60.1 }))
+      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'a stored row pulled the reader off now').toBe(`CPU, ${stampAt(NOW)}, 60.1%`)
+      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe(String(flushed.length + 1))
+
+      // A minute on, the reader is still on the live value, and its date has moved with it.
+      rerender(element({ data: [...flushed, newerRow], live: 60.1, now: NOW + 60_000 }))
+      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'the live value kept the time it was first read at')
+        .toBe(`CPU, ${stampAt(NOW + 60_000)}, 60.1%`)
+    })
+
+    it('falls back to the newest stored row when the live value goes away', () => {
+      const { container, rerender } = chart({ live: 57.4 })
+      fireEvent.focus(surfaceOf(container))
+      fireEvent.keyDown(surfaceOf(container), { key: 'End' })
+
+      rerender(element({ live: null }))
+      const after = surfaceOf(container)
+      expect(after.getAttribute('aria-valuenow')).toBe(String(flushed.length - 1))
+      expect(after.getAttribute('aria-valuetext')).toBe(`CPU, ${stampAt(Date.parse(flushed[flushed.length - 1]!.time))}, 20%`)
+    })
+
+    it('leaves a reader on a stored row where they are while the live value comes and goes', () => {
+      const { container, rerender } = chart({ live: 57.4 })
+      fireEvent.focus(surfaceOf(container))
+      fireEvent.keyDown(surfaceOf(container), { key: 'Home' })
+
+      rerender(element({ live: 70 }))
+      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe('0')
+      rerender(element({ live: null }))
+      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe('0')
+    })
   })
 })
 
@@ -192,7 +407,7 @@ describe('the chart can be read without a mouse', () => {
     const surface = surfaceOf(container)
     expect(surface.getAttribute('tabindex')).toBe('0')
     expect(surface.getAttribute('aria-valuemax')).toBe(String(series.length - 1))
-    expect(surface.getAttribute('aria-valuetext')).toMatch(/CPU %/)
+    expect(surface.getAttribute('aria-valuetext')).toMatch(/^CPU, /)
   })
 
   it('the arrows walk the series and Escape dismisses the reading', () => {
@@ -262,7 +477,7 @@ describe('the chart can be read without a mouse', () => {
     )
     const after = surfaceOf(container)
     expect(Number(after.getAttribute('aria-valuenow'))).toBeLessThanOrEqual(Number(after.getAttribute('aria-valuemax')))
-    expect(after.getAttribute('aria-valuetext'), 'the reading went missing').toMatch(/CPU %/)
+    expect(after.getAttribute('aria-valuetext'), 'the reading went missing').toMatch(/^CPU, /)
   })
 
   it('returns focus to where the reader left the cursor, not to the end', () => {
@@ -313,6 +528,9 @@ describe('the chart can be read without a mouse', () => {
     expect(announced).toContain('57.4%')
     const drawn = container.querySelector('[aria-hidden="true"]')?.textContent ?? ''
     expect(drawn, 'the drawn reading disagrees with the announced one').toContain('57.4%')
+    // The unit once. The card title is "CPU %", so naming the reading with it printed "CPU %: 57.4%".
+    expect(drawn, 'the reading names the series with its unit and then the value with it again').toContain('CPU: 57.4%')
+    expect(announced).toMatch(/^CPU, .*, 57\.4%$/)
 
     // The third rendering of the same number: the chart's own summary name, which a reader hears on the
     // way in. It rounded to an integer while both of the above kept a digit.
@@ -325,5 +543,74 @@ describe('the chart can be read without a mouse', () => {
     const surface = surfaceOf(setup().container)
     expect(surface.getAttribute('style') ?? '', 'an inline outline colour is visible at rest').not.toMatch(/outline/i)
     expect(surface.getAttribute('class') ?? '').toMatch(/focus-visible:outline/)
+  })
+
+  describe('as the window advances under it', () => {
+    // The chart re-renders with a moved window and refreshed rows while a reader is on it. An index cursor
+    // moved the reading one sample newer for every row that aged out of the left edge — a change nobody
+    // made, announced as though they had.
+    const chart = (data = varied, now = AT) =>
+      <AreaChartInner width={600} height={220} data={data} dataKey="cpu" hex="#60a5fa" range="1h" now={now} label="CPU %" />
+    // Distinct values, so two samples cannot announce the same thing by coincidence.
+    const varied = series.map((d, i) => ({ ...d, cpu: i }))
+
+    it('stays on the sample the reader chose when an older row ages out', () => {
+      const { container, rerender } = render(chart())
+      const surface = surfaceOf(container)
+      fireEvent.focus(surface)
+      fireEvent.keyDown(surface, { key: 'Home' })
+      fireEvent.keyDown(surface, { key: 'ArrowRight' })
+      const reading = surface.getAttribute('aria-valuetext')
+
+      rerender(chart(varied.slice(1)))
+      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'the reading moved when a row aged out').toBe(reading)
+      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe('0')
+    })
+
+    it('moves to the oldest remaining sample when the chosen one ages out', () => {
+      const { container, rerender } = render(chart())
+      fireEvent.focus(surfaceOf(container))
+      fireEvent.keyDown(surfaceOf(container), { key: 'Home' })
+
+      rerender(chart(varied.slice(1)))
+      const after = surfaceOf(container)
+      expect(after.getAttribute('aria-valuenow')).toBe('0')
+      expect(after.getAttribute('aria-valuetext'), 'the reading is not the oldest remaining sample').toMatch(/, 1%$/)
+    })
+
+    it('stays put when a newer row arrives', () => {
+      const { container, rerender } = render(chart())
+      const surface = surfaceOf(container)
+      fireEvent.focus(surface)
+      fireEvent.keyDown(surface, { key: 'Home' })
+      for (let i = 0; i < 10; i++) fireEvent.keyDown(surface, { key: 'ArrowRight' })
+      const reading = surface.getAttribute('aria-valuetext')
+
+      rerender(chart([...varied, { time: new Date(AT).toISOString(), cpu: 99, mem: 57 }]))
+      expect(surfaceOf(container).getAttribute('aria-valuetext')).toBe(reading)
+      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe('10')
+    })
+
+    it('keeps the drawn reading on its sample while the window moves', () => {
+      // The tooltip's position was stored when it opened, so an advancing axis slid the sample out from
+      // under a guide line that stayed where it was.
+      const { container, rerender } = render(chart())
+      fireEvent.focus(surfaceOf(container))
+      fireEvent.keyDown(surfaceOf(container), { key: 'End' })
+      const guideX = () =>
+        Number(/translateX\((-?[\d.e-]+)px\)/.exec(container.querySelector('g[style*="translateX"]')?.getAttribute('style') ?? '')?.[1])
+      const before = guideX()
+      expect(Number.isFinite(before), 'no guide line was drawn').toBe(true)
+
+      rerender(chart(varied, AT + 600_000))
+      expect(before - guideX(), 'the guide line did not move with its sample').toBeCloseTo((600_000 / 3_600_000) * (600 - 40 - 24), 3)
+    })
+
+    it('opens at the newest sample if the reader has not placed the cursor yet', () => {
+      const { container, rerender } = render(chart())
+      rerender(chart([...varied, { time: new Date(AT).toISOString(), cpu: 99, mem: 57 }]))
+      fireEvent.focus(surfaceOf(container))
+      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe(String(varied.length))
+    })
   })
 })
