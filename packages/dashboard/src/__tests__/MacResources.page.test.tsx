@@ -214,16 +214,19 @@ describe('the history refreshes without the chart going blank', () => {
 })
 
 describe('the axis flows with time', () => {
-  it('advances by itself, once per interval', async () => {
-    // #751: the window's edge was the moment of the fetch, so an open page kept that moment forever.
+  it.each(['1h', '6h', '24h', '7d'] as const)('advances %s by itself, once per interval', async (r) => {
+    // #751: the window's edge was the moment of the fetch, so an open page kept that moment forever. Every
+    // range, because the cadence is chosen per range and the page is what hands it to the clock.
     const { container } = await mount()
-    const before = tickXs(container)
-    const at1500 = xOfTick(container, '15:00')
-    expect(Number.isFinite(at1500), 'no 15:00 tick to follow').toBe(true)
-    await advance(flowIntervalMs('24h') - 1)
-    expect(tickXs(container)).toEqual(before)
+    if (r !== '24h') await selectRange(r)
+    const labelled = () =>
+      new Map([...(cpuChart(container)?.querySelectorAll('.visx-axis-bottom text') ?? [])].map((t) => [t.textContent ?? '', Number(t.getAttribute('x'))]))
+    const mid = [...labelled()].filter(([, x]) => x > 50 && x < 600 - 40 - 24 - 50)
+    const [label, x] = mid[Math.floor(mid.length / 2)]!
+    await advance(flowIntervalMs(r) - 1)
+    expect(labelled().get(label), `the ${r} axis moved before its interval`).toBe(x)
     await advance(1)
-    expect(xOfTick(container, '15:00'), 'the axis did not move').toBeLessThan(at1500)
+    expect(labelled().get(label), `the ${r} axis did not move on its interval`).toBeLessThan(x)
   })
 
   it('stops while the tab is hidden, and catches up the moment it is shown', async () => {
@@ -246,6 +249,40 @@ describe('the axis flows with time', () => {
       .toBeCloseTo((HISTORY_POLL_MS['24h'] * 2 / 86_400_000) * (600 - 40 - 24), 3)
     expect(screen.queryByText('Loading…')).toBeNull()
   })
+
+  it('does not re-fetch on return when the history is younger than its interval', async () => {
+    // Switching tabs is not a reason to re-send the whole window — about 10,080 rows on 7d. The live head
+    // covers the recent end, so the history waits out the rest of its interval.
+    await mount()
+    await act(async () => { setVisibility('hidden') })
+    await advance(60_000)
+    await act(async () => {
+      setVisibility('visible')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(resourceCalls, 'returning to the tab re-fetched a history a minute old').toHaveLength(1)
+    await advance(HISTORY_POLL_MS['24h'] - 60_000 - 1)
+    expect(resourceCalls).toHaveLength(1)
+    await advance(1)
+    expect(resourceCalls, 'the rest of the interval never came due').toHaveLength(2)
+  })
+
+  it('loads at once on return if hiding the tab cut the first load short', async () => {
+    // A history's age is taken from when a load finished. Taken from when it started, a first load aborted
+    // by hiding the tab would count as fresh, and the page would sit on Loading for the rest of the interval.
+    const slow = deferred()
+    respond = () => slow.promise
+    await mount()
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    await act(async () => { setVisibility('hidden') })
+    respond = () => ok(rows(20))
+    await act(async () => {
+      setVisibility('visible')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(resourceCalls).toHaveLength(2)
+    expect(screen.queryByText('Loading…'), 'the page waited out an interval for a load that never finished').toBeNull()
+  })
 })
 
 describe('the live head', () => {
@@ -260,8 +297,11 @@ describe('the live head', () => {
     const { container } = await mount()
     await listed([agent('studio-mac', report())])
     expect(heads(container)).toHaveLength(2)
-    // Reported 5s ago; the first axis update after it passes 30s is where it must be gone.
-    await advance(flowIntervalMs('24h'))
+    // Reported 5s ago. The clock it is judged against ticks every 10s on 24h, so it survives to 25s old and
+    // is gone at the tick after it turns 30 — within 40s, the bound the QA Session cards give.
+    await advance(20_000)
+    expect(heads(container), 'dropped before it was stale').toHaveLength(2)
+    await advance(10_000)
     expect(heads(container), 'a Mac that went silent kept a live value').toEqual([])
   })
 

@@ -294,6 +294,17 @@ describe('the line reaches now through the live sample', () => {
     expect(Number(dot?.getAttribute('cx')), 'the dot left the plot').toBeLessThanOrEqual(RIGHT_EDGE)
   })
 
+  it('lets the pointer on the dot read the live value even when the relay clock is well ahead', () => {
+    // The dot is drawn at the plot's edge, but a relay a minute ahead stamps its newest row later than any
+    // time the pointer can reach. Nearest in time, that row won every hover and the dot under the pointer
+    // could not be read; nearest in where the points are drawn, the dot does.
+    const ahead = flushed.map((d) => ({ ...d, time: new Date(Date.parse(d.time) + 105_000).toISOString() }))
+    const { container } = chart({ data: ahead, live: 50 })
+    const surface = container.querySelector('rect[role="slider"]')!
+    fireEvent.mouseMove(surface, { clientX: 40 + RIGHT_EDGE + 5, clientY: 50 })
+    expect(surface.getAttribute('aria-valuenow'), 'the hover chose a stored row drawn under the dot').toBe(String(flushed.length))
+  })
+
   it('prints the live value nowhere on the plot, and carries it in the reading instead', () => {
     // A value printed beside the dot is a second rendering of what hovering the dot shows, in a box that
     // looks like the tooltip without behaving like one. The dot marks now; the reading — the tooltip, and
@@ -346,33 +357,55 @@ describe('the line reaches now through the live sample', () => {
       fireEvent.focus(surface)
       fireEvent.keyDown(surface, { key: 'Home' })
       fireEvent.keyDown(surface, { key: 'End' })
-      expect(surface.getAttribute('aria-valuetext')).toBe(`CPU, ${stampAt(NOW)}, 57.4%`)
+      // "latest" for AT only. The newest stored row is often in the same minute, and what tells them apart
+      // for a sighted reader — the dot at the edge — is `aria-hidden`.
+      expect(surface.getAttribute('aria-valuetext')).toBe(`CPU, ${stampAt(NOW)}, latest, 57.4%`)
     })
 
-    it('keeps a reader on now when a stored row arrives, and follows the value as it changes', () => {
+    it('keeps a reader on now as rows arrive, and tells AT nothing new until the reader acts', () => {
+      // The live value changes with every report, about every 10s, and a screen reader speaks every change
+      // to a focused slider's value — with no key pressed, for as long as focus stays. So what AT was told
+      // holds until the reader acts. The drawn tooltip keeps up; the cursor stays on the live value.
       const { container, rerender } = chart({ live: 57.4 })
       fireEvent.focus(surfaceOf(container))
       fireEvent.keyDown(surfaceOf(container), { key: 'End' })
+      const told = () => [surfaceOf(container).getAttribute('aria-valuetext'), surfaceOf(container).getAttribute('aria-valuenow')]
+      const before = told()
 
-      rerender(element({ data: [...flushed, newerRow], live: 60.1 }))
-      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'a stored row pulled the reader off now').toBe(`CPU, ${stampAt(NOW)}, 60.1%`)
-      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe(String(flushed.length + 1))
-
-      // A minute on, the reader is still on the live value, and its date has moved with it.
       rerender(element({ data: [...flushed, newerRow], live: 60.1, now: NOW + 60_000 }))
-      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'the live value kept the time it was first read at')
-        .toBe(`CPU, ${stampAt(NOW + 60_000)}, 60.1%`)
+      expect(told(), 'the focused slider changed what it announces on its own').toEqual(before)
+      expect(tooltipText(container), 'the drawn reading stopped following the live value').toContain('CPU: 60.1%')
+
+      // ArrowRight, not End: from the live value it stays there, and from a stored row it would not.
+      fireEvent.keyDown(surfaceOf(container), { key: 'ArrowRight' })
+      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'a stored row pulled the reader off now')
+        .toBe(`CPU, ${stampAt(NOW + 60_000)}, latest, 60.1%`)
+      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe(String(flushed.length + 1))
     })
 
-    it('falls back to the newest stored row when the live value goes away', () => {
+    it('resumes from the newest stored row when the live value goes away', () => {
       const { container, rerender } = chart({ live: 57.4 })
       fireEvent.focus(surfaceOf(container))
       fireEvent.keyDown(surfaceOf(container), { key: 'End' })
 
       rerender(element({ live: null }))
+      fireEvent.keyDown(surfaceOf(container), { key: 'ArrowRight' })
       const after = surfaceOf(container)
       expect(after.getAttribute('aria-valuenow')).toBe(String(flushed.length - 1))
       expect(after.getAttribute('aria-valuetext')).toBe(`CPU, ${stampAt(Date.parse(flushed[flushed.length - 1]!.time))}, 20%`)
+    })
+
+    it('lets go of what it told AT once focus leaves, so the chart is described as it is now', () => {
+      // Held only while focused, where a change would be spoken. Held past blur, a screen reader's virtual
+      // cursor passing over the chart later would read a value minutes old.
+      const { container, rerender } = chart({ live: 57.4 })
+      fireEvent.focus(surfaceOf(container))
+      fireEvent.keyDown(surfaceOf(container), { key: 'End' })
+      fireEvent.blur(surfaceOf(container))
+
+      rerender(element({ live: 60.1 }))
+      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'an unfocused chart still reads an old value')
+        .toBe(`CPU, ${stampAt(NOW)}, latest, 60.1%`)
     })
 
     it('leaves a reader on a stored row where they are while the live value comes and goes', () => {
@@ -427,6 +460,16 @@ describe('the chart can be read without a mouse', () => {
     // Dismissible without moving focus (WCAG 1.4.13) — the reading overlays the plot.
     fireEvent.keyDown(surface, { key: 'Escape' })
     expect(container.querySelector('[class*="pointer-events-none"]'), 'Escape left the reading up').toBeNull()
+  })
+
+  it('dismisses a hovered reading with Escape as well, which never had focus', () => {
+    // WCAG 1.4.13 asks for a way to dismiss content shown on hover without moving the pointer. The slider's
+    // own key handler runs only with focus, and hovering never gives it focus.
+    const { container } = setup()
+    fireEvent.mouseMove(surfaceOf(container), { clientX: 200, clientY: 50 })
+    expect(container.querySelector('[class*="pointer-events-none"]'), 'hovering drew no reading').not.toBeNull()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(container.querySelector('[class*="pointer-events-none"]'), 'Escape left the hovered reading up').toBeNull()
   })
 
   it('names itself with the title the card shows', () => {
@@ -563,16 +606,21 @@ describe('the chart can be read without a mouse', () => {
       const reading = surface.getAttribute('aria-valuetext')
 
       rerender(chart(varied.slice(1)))
-      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'the reading moved when a row aged out').toBe(reading)
-      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe('0')
+      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'the focused slider changed its reading on its own').toBe(reading)
+      // The next key steps from the sample the reader chose — index 0 now — not from where its index was.
+      fireEvent.keyDown(surfaceOf(container), { key: 'ArrowRight' })
+      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'the reader lost their place when a row aged out').toMatch(/, 2%$/)
+      expect(surfaceOf(container).getAttribute('aria-valuenow')).toBe('1')
     })
 
-    it('moves to the oldest remaining sample when the chosen one ages out', () => {
+    it('resumes from the oldest remaining sample when the chosen one ages out, and says so only when asked', () => {
       const { container, rerender } = render(chart())
       fireEvent.focus(surfaceOf(container))
       fireEvent.keyDown(surfaceOf(container), { key: 'Home' })
 
       rerender(chart(varied.slice(1)))
+      expect(surfaceOf(container).getAttribute('aria-valuetext'), 'the reading changed with no key pressed').toMatch(/, 0%$/)
+      fireEvent.keyDown(surfaceOf(container), { key: 'ArrowLeft' })
       const after = surfaceOf(container)
       expect(after.getAttribute('aria-valuenow')).toBe('0')
       expect(after.getAttribute('aria-valuetext'), 'the reading is not the oldest remaining sample').toMatch(/, 1%$/)

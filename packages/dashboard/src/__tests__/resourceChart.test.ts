@@ -105,10 +105,12 @@ describe('the axis advances at most a pixel per update', () => {
     // then re-renders a little more often than it needs to, which on at most 1440 rows is nothing, and
     // no width has to be threaded from `ParentSize` up to the page.
     expect(flowIntervalMs('1h')).toBe(1_800)
-    expect(flowIntervalMs('6h')).toBe(10_800)
-    expect(flowIntervalMs('24h')).toBe(43_200)
-    // Clamped: 7d at 2000px would be every five minutes, and a minute is the finest the data is anyway.
-    expect(flowIntervalMs('7d')).toBe(60_000)
+    // Clamped at ten seconds. The live head's staleness is judged against this clock, and a slower one kept
+    // a silent Mac's value up for over a minute on the long ranges; the agent list that carries the value
+    // arrives every 10s anyway, so the cap adds no renders while it does.
+    expect(flowIntervalMs('6h')).toBe(10_000)
+    expect(flowIntervalMs('24h')).toBe(10_000)
+    expect(flowIntervalMs('7d')).toBe(10_000)
     for (const r of Object.keys(RANGE_MS) as Range[]) {
       expect((flowIntervalMs(r) / RANGE_MS[r]) * 2000, `${r} moves more than a pixel per update`).toBeLessThanOrEqual(1)
     }

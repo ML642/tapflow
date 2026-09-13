@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRelay } from '@/hooks/useRelay'
 import { useBreadcrumb } from '@/hooks/useBreadcrumb'
 import { useDocumentVisible } from '@/hooks/useDocumentVisible'
@@ -91,10 +91,16 @@ export function MacResources() {
   }, [allAgents.join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const historyKey = selectedAgent ? `${selectedAgent}\n${range}` : null
+  // When a history last finished loading, and for which key — so a tab brought back does not re-send the
+  // whole window (about 10,080 rows on 7d) before its interval has come due. **Finished, not started**: a
+  // first load cut short by hiding the tab would otherwise count as fresh, and the page would sit on Loading
+  // for the rest of the interval.
+  const loadedAt = useRef<{ key: string; at: number } | null>(null)
 
   useEffect(() => {
     if (!selectedAgent || !visible) return
     const key = `${selectedAgent}\n${range}`
+    const poll = HISTORY_POLL_MS[range]
     const controller = new AbortController()
     let latest = 0
     const load = () => {
@@ -112,18 +118,30 @@ export function MacResources() {
           return r.json() as Promise<ResourcePoint[]>
         })
         .then((points) => {
-          if (current()) setHistory({ key, points })
+          if (!current()) return
+          loadedAt.current = { key, at: Date.now() }
+          setHistory({ key, points })
         })
         // A failed refresh keeps what is drawn: one dropped request emptying a monitoring chart reports an
         // outage that did not happen. A failed *first* load still settles on the empty state.
         .catch(() => {
-          if (current()) setHistory((prev) => (prev?.key === key ? prev : { key, points: [] }))
+          if (!current()) return
+          loadedAt.current = { key, at: Date.now() }
+          setHistory((prev) => (prev?.key === key ? prev : { key, points: [] }))
         })
     }
-    load()
-    const id = setInterval(load, HISTORY_POLL_MS[range])
+    const last = loadedAt.current
+    const wait = last?.key === key ? Math.max(0, poll - (Date.now() - last.at)) : 0
+    let id: ReturnType<typeof setInterval> | undefined
+    const start = () => {
+      load()
+      id = setInterval(load, poll)
+    }
+    const deferred = wait > 0 ? setTimeout(start, wait) : undefined
+    if (wait === 0) start()
     return () => {
       controller.abort()
+      clearTimeout(deferred)
       clearInterval(id)
     }
   }, [selectedAgent, range, visible])
@@ -338,6 +356,11 @@ export function AreaChartInner({
   // chose it should stay on it while rows are stored behind it.
   const [cursor, setCursor] = useState<number | 'live' | null>(null)
   const [readingShown, setReadingShown] = useState(false)
+  // **What AT has been told, held until the reader acts.** Derived each render, the focused slider's value
+  // changed with every live report (~10s) and every row that aged out, and a screen reader speaks every change
+  // to a focused slider's value — with no key pressed, for as long as focus stays (WCAG 2.2.2). Set only in
+  // `showAt`, which focus, keys and the pointer all go through; cleared on blur, where nothing is spoken.
+  const [told, setTold] = useState<{ now: number; text: string } | null>(null)
 
   const innerW = width - MARGIN.left - MARGIN.right
   const innerH = height - MARGIN.top - MARGIN.bottom
@@ -397,14 +420,36 @@ export function AreaChartInner({
   const tooltipLeft = tooltipData ? xIn(tooltipData.t) : 0
   const tooltipTop = tooltipData ? yScale(tooltipData.v) : 0
 
-  /** Show the point at `i`, the way a pointer move would. The keyboard path lands here too. */
+  // Named, because the page renders two of these side by side — an unattributed "02:50, 57%" does not say
+  // which chart answered — and by the series rather than the card title, which is "CPU %" and printed the
+  // unit twice. Date and value come from `stampOf`/`percentOf`, which the visible tooltip also calls: this
+  // is the only reading AT gets, since that tooltip is `aria-hidden`, so the two must not drift.
+  // **"latest" for AT only.** The newest stored row is often in the same minute as the live value, and what
+  // marks the live value for a sighted reader — the dot at the edge — is `aria-hidden`.
+  const series = chartConfig[dataKey].label
+  const reading = (p: Point) => `${series}, ${stampOf(p.t)}, ${p.live ? 'latest, ' : ''}${percentOf(p.v)}`
+
+  /** Show the point at `i`, the way a pointer move would. The keyboard path lands here too, and this is the
+   *  one place what AT is told gets updated. */
   const showAt = (i: number) => {
     const p = line[i]
     if (!p) return
     setCursor(p.live ? 'live' : p.t)
     setReadingShown(true)
+    setTold({ now: i, text: reading(p) })
   }
   const hideReading = () => setReadingShown(false)
+
+  // Dismissible without moving the pointer or focus (WCAG 1.4.13), however the reading opened. The slider's
+  // own key handler runs only with focus, and a hover never gives it focus.
+  useEffect(() => {
+    if (!readingShown) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setReadingShown(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [readingShown])
 
   // **The values in this chart were mouse-only.** The tooltip is the only place a reading is written down,
   // and it opened on `mousemove` alone — so a keyboard user could reach the page and read nothing from it.
@@ -412,9 +457,6 @@ export function AreaChartInner({
   // `aria-valuetext` rather than inferred from a tooltip nobody can see.
   const handleKey = (e: React.KeyboardEvent<SVGRectElement>) => {
     if (line.length === 0) return
-    // Dismissible without moving focus (WCAG 1.4.13): the reading overlays the plot, and a magnifier user
-    // whose view it covers should not have to tab away to clear it.
-    if (e.key === 'Escape') { hideReading(); return }
     // Vertical arrows too: they are half of the slider pattern's key set, and a screen-reader user in
     // focus mode reaches for them as readily as the horizontal pair.
     const current = idx
@@ -432,25 +474,21 @@ export function AreaChartInner({
   const handleMove = (e: React.MouseEvent<SVGRectElement> | React.TouchEvent<SVGRectElement>) => {
     const point = localPoint(e)
     if (!point) return
-    const t0 = xScale.invert(point.x - MARGIN.left).getTime()
-    const i = bisectPoint(line, t0)
-    const lo = line[i - 1]
-    const hi = line[i]
-    const p = lo && hi ? (t0 - lo.t < hi.t - t0 ? lo : hi) : (lo ?? hi)
+    const x0 = point.x - MARGIN.left
+    const i = bisectPoint(line, xScale.invert(x0).getTime())
+    // **Nearest where the points are drawn, not nearest in time.** The live head is drawn at the plot's edge,
+    // but a relay running ahead stamps rows later than any time the pointer can reach, and nearest-in-time
+    // then handed every hover on the dot to a stored row. Ties go to the later point.
+    const p = [line[i - 1], line[i], liveHead].reduce<Point | undefined>(
+      (best, c) => (c && (!best || Math.abs(xIn(c.t) - x0) <= Math.abs(xIn(best.t) - x0)) ? c : best),
+      undefined,
+    )
     if (!p) return
     // Through `showAt`, so the cursor is the one source of position. Calling `showTooltip` directly here
     // moved what is drawn while `aria-valuenow` kept reporting the keyboard's index — the slider's state
     // then described something other than what it was showing.
     showAt(line.indexOf(p))
   }
-
-  // Named, because the page renders two of these side by side — an unattributed "02:50, 57%" does not say
-  // which chart answered. Named by the series, not the card title: the title is "CPU %", and the value
-  // already carries the unit, so the title printed it twice. The rest comes from `stampOf`/`percentOf`,
-  // which the visible tooltip also calls: this is the only reading AT gets, since that tooltip is
-  // `aria-hidden`, so the two must not drift.
-  const series = chartConfig[dataKey].label
-  const reading = (p: Point) => `${series}, ${stampOf(p.t)}, ${percentOf(p.v)}`
 
   return (
     <>
@@ -579,14 +617,19 @@ export function AreaChartInner({
             aria-label={`${label} samples`}
             aria-valuemin={0}
             aria-valuemax={Math.max(0, line.length - 1)}
-            aria-valuenow={idx}
-            aria-valuetext={line[idx] ? reading(line[idx]!) : undefined}
+            // What AT was last told rather than what is under the cursor now — see `told`. Clamped, because the
+            // series can shrink under a held value (7d → 1h) and a slider must not report past its maximum.
+            aria-valuenow={told ? Math.min(told.now, Math.max(0, line.length - 1)) : idx}
+            aria-valuetext={told ? told.text : line[idx] ? reading(line[idx]!) : undefined}
             aria-describedby={hintId}
             // No inline `outlineColor`: `outline-none` is a *transparent* 2px outline, so colouring it
             // here painted a black box around the plot at rest. The colour belongs in the focus variant.
             className="outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             onFocus={() => showAt(idx)}
-            onBlur={hideReading}
+            onBlur={() => {
+              hideReading()
+              setTold(null)
+            }}
             onKeyDown={handleKey}
             onMouseMove={handleMove}
             onMouseLeave={hideReading}
@@ -596,7 +639,7 @@ export function AreaChartInner({
           />
         </Group>
       </svg>
-      <p id={hintId} className="sr-only">Use the arrow keys to read individual samples. Escape hides the reading.</p>
+      <p id={hintId} className="sr-only">Use the arrow keys to read individual samples; End reads the latest value again. Escape hides the reading.</p>
       {tooltipData && (
         <div
           // The reading rides on `aria-valuetext`; this is the same value drawn, and exposing both gave a

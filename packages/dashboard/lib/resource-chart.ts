@@ -35,14 +35,17 @@ export function formatTick(t: Date | number, range: Range): string {
 }
 
 /** The widest plot the flow cadence is sized for. Sized rather than measured: a narrower plot re-renders a
- *  little more often than it moves, which on at most 1440 rows costs nothing, and no width has to travel
- *  from `ParentSize` up to the page that owns the clock. */
+ *  little more often than it moves, which costs little — every 1.8s on 1h's ~60 rows, and on the longer
+ *  ranges no more often than the page's own 10s agent-list render — and no width has to travel from
+ *  `ParentSize` up to the page that owns the clock. */
 const FLOW_PLOT_PX = 2000
 
 /** How often the axis re-reads the clock: often enough that it never jumps more than a pixel. Bounded below
- *  so a short range cannot spin, and above at a minute — the finest the stored history is. */
+ *  so a short range cannot spin, and above at ten seconds because the live head's staleness is judged
+ *  against this clock: a minute-long tick kept a silent Mac's value up for ~90s on 7d. The agent list that
+ *  carries the value arrives every 10s, so the cap adds no renders while it is arriving. */
 export function flowIntervalMs(range: Range): number {
-  return Math.min(60_000, Math.max(1_000, RANGE_MS[range] / FLOW_PLOT_PX))
+  return Math.min(10_000, Math.max(1_000, RANGE_MS[range] / FLOW_PLOT_PX))
 }
 
 /** How often the stored history is re-fetched. The relay writes one row a minute, so nothing refreshes
