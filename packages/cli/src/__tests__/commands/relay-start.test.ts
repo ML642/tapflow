@@ -21,8 +21,10 @@ vi.mock('../../lib/rathole-tunnel.js', () => ({
 vi.mock('../../lib/tailscale-tunnel.js', () => ({
   TailscaleTunnel: vi.fn().mockImplementation(function () { return mockTunnel }),
 }))
+vi.mock('../../lib/port-available.js', () => ({ isPortFree: vi.fn() }))
 
 import { RelayServer, initDb, config, createCertProvider, resolveRelayDisplayHost, buildCorsOrigins, proxyWithoutPublicUrlWarning } from '@tapflowio/relay'
+import { isPortFree } from '../../lib/port-available.js'
 import { RatholeTunnel } from '../../lib/rathole-tunnel.js'
 import { TailscaleTunnel } from '../../lib/tailscale-tunnel.js'
 import { cmdRelayStart } from '../../commands/relay-start.js'
@@ -54,6 +56,7 @@ describe('cmdRelayStart', () => {
     vi.mocked(TailscaleTunnel).mockImplementation(function () { return mockTunnel as never })
     vi.mocked(config).tunnel = null
     vi.mocked(config).tls = null
+    vi.mocked(isPortFree).mockResolvedValue(true)
   })
 
   afterEach(() => vi.restoreAllMocks())
@@ -233,6 +236,70 @@ describe('cmdRelayStart', () => {
       expect(RelayServer).toHaveBeenCalled()
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('connection refused'))
     })
+
+    it('터널이 RelayServer 생성보다 먼저 시작된다', async () => {
+      await cmdRelayStart({})
+      expect(mockTunnel.start.mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(RelayServer).mock.invocationCallOrder[0])
+    })
+
+    it('터널 결과와 그 결과로 계산한 CORS 목록이 RelayServer에 도착한다', async () => {
+      vi.mocked(buildCorsOrigins).mockImplementation((_cfg, _port, tunnel) => (tunnel ? ['sentinel'] : []))
+      await cmdRelayStart({})
+      const runtime = { publicUrl: 'https://vps.example.com' }
+      expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ tunnel: runtime, corsOrigins: ['sentinel'] }))
+      expect(proxyWithoutPublicUrlWarning).toHaveBeenCalledWith(config, runtime)
+    })
+
+    it('토큰이 없어 터널이 시작되지 않으면 publicUrl null을 넘긴다', async () => {
+      vi.unstubAllEnvs()
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      await cmdRelayStart({})
+      expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ tunnel: { publicUrl: null } }))
+    })
+
+    it('relay 시작이 실패하면 터널을 멈추고 원래 오류를 전파한다', async () => {
+      const failure = new Error('Port 4000 is already in use. Stop the existing process and try again.')
+      vi.mocked(RelayServer).mockImplementation(function () { return { start: vi.fn().mockRejectedValue(failure) } as never })
+      await expect(cmdRelayStart({})).rejects.toBe(failure)
+      expect(mockTunnel.stop).toHaveBeenCalled()
+    })
+
+    it('RelayServer 생성자가 던져도 터널을 멈춘다', async () => {
+      const failure = new Error('key values mismatch')
+      vi.mocked(RelayServer).mockImplementation(function () { throw failure })
+      await expect(cmdRelayStart({})).rejects.toBe(failure)
+      expect(mockTunnel.stop).toHaveBeenCalled()
+    })
+
+    it('포트가 이미 쓰이면 터널도 relay도 시작하지 않는다', async () => {
+      vi.mocked(isPortFree).mockResolvedValue(false)
+      await expect(cmdRelayStart({ port: 4321 })).rejects.toThrow('already in use')
+      expect(isPortFree).toHaveBeenCalledWith(4321)
+      expect(mockTunnel.setupServer).not.toHaveBeenCalled()
+      expect(RelayServer).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('터널 설정 오류는 relay를 띄우기 전에 낸다', () => {
+    it('지원하지 않는 --tunnel 값', async () => {
+      await expect(cmdRelayStart({ tunnel: 'foo' })).rejects.toThrow('process.exit')
+      expect(exitSpy).toHaveBeenCalledWith(1)
+      expect(RelayServer).not.toHaveBeenCalled()
+    })
+
+    it('--tunnel인데 tunnel 섹션이 없음', async () => {
+      vi.mocked(config).tunnel = null
+      await expect(cmdRelayStart({ tunnel: 'rathole' })).rejects.toThrow('process.exit')
+      expect(exitSpy).toHaveBeenCalledWith(1)
+      expect(RelayServer).not.toHaveBeenCalled()
+    })
+  })
+
+  it('터널이 없으면 tunnel 옵션을 넘기지 않고 포트도 따로 확인하지 않는다', async () => {
+    await cmdRelayStart({})
+    expect(vi.mocked(RelayServer).mock.calls[0][0].tunnel).toBeUndefined()
+    expect(isPortFree).not.toHaveBeenCalled()
   })
 
   describe('tailscale 터널', () => {

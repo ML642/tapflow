@@ -1,0 +1,74 @@
+/**
+ * Addresses the dashboard hands to someone else: a link a teammate opens, and the relay address an
+ * agent on another Mac connects to. Built here and nowhere else (#788).
+ *
+ * **The relay decides what its settings mean; this file only falls back.** `/api/v1/relay/host` reports
+ * `publicBaseUrl` (where a teammate's browser goes: a started tunnel, else `relay.url`) and
+ * `agentRelayUrl` (`relay.url` alone). They are separate because an agent on the relay's own LAN must not
+ * stream through a tunnel, so a link and the agent command can name different hosts. See
+ * `packages/relay/src/lib/publicUrl.ts`.
+ *
+ * **When the relay offers nothing,** a viewer on localhost gets the relay's LAN address — their own
+ * address is the one place a teammate cannot reach — and any other viewer keeps the address they are
+ * already using, which is known to work. The relay withholds its LAN guess inside a container, where the
+ * only candidate is a bridge address nobody can open.
+ *
+ * `useRelay` does not come here: it connects this page to its own relay, and the browser's own origin is
+ * the right answer for that.
+ */
+
+export interface RelayHostInfo {
+  lanHost: string | null
+  port: number
+  publicBaseUrl: string | null
+  agentRelayUrl: string | null
+}
+
+export interface Viewer {
+  protocol: string
+  hostname: string
+  host: string
+  origin: string
+}
+
+export interface TeammateBases {
+  linkBase: string
+  agentWsBase: string
+}
+
+const LOCAL_HOSTNAMES = ['localhost', '127.0.0.1', '[::1]']
+
+export function resolveTeammateBases(info: RelayHostInfo | null, viewer: Viewer): TeammateBases {
+  const wsScheme = viewer.protocol === 'https:' ? 'wss' : 'ws'
+  const lan = info?.lanHost && LOCAL_HOSTNAMES.includes(viewer.hostname) ? `${info.lanHost}:${info.port}` : null
+  return {
+    linkBase: info?.publicBaseUrl ?? (lan ? `${viewer.protocol}//${lan}` : viewer.origin),
+    agentWsBase: info?.agentRelayUrl ?? (lan ? `${wsScheme}://${lan}` : `${wsScheme}://${viewer.host}`),
+  }
+}
+
+export function joinPath(base: string, path: string): string {
+  return `${base.replace(/\/+$/, '')}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+let pending: Promise<TeammateBases> | null = null
+
+/**
+ * Asks the relay once per page. A refused or failed lookup resolves to the viewer fallback rather than
+ * throwing: every caller is about to show or copy an address, and the browser's own is better than none.
+ */
+export function loadTeammateBases(): Promise<TeammateBases> {
+  pending ??= fetch('/api/v1/relay/host', { credentials: 'include' })
+    .then((res) => (res.ok ? (res.json() as Promise<RelayHostInfo>) : null))
+    .catch(() => null)
+    .then((info) => {
+      const { protocol, hostname, host, origin } = window.location
+      return resolveTeammateBases(info, { protocol, hostname, host, origin })
+    })
+  return pending
+}
+
+/** The cache lives for the page, which in a test file is every test. */
+export function resetTeammateBasesForTests(): void {
+  pending = null
+}

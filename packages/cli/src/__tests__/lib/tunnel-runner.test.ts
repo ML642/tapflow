@@ -10,7 +10,25 @@ vi.mock('../../lib/tailscale-tunnel.js', () => ({
 
 import { RatholeTunnel } from '../../lib/rathole-tunnel.js'
 import { TailscaleTunnel } from '../../lib/tailscale-tunnel.js'
-import { startConfiguredTunnel } from '../../lib/tunnel-runner.js'
+import { startConfiguredTunnel, tunnelRuntimeFor } from '../../lib/tunnel-runner.js'
+
+// A detected Tailscale URL is always http://, and a TLS relay answers only HTTPS on that port, so handing
+// the relay that URL would put an address nothing answers into mail, links and CORS.
+describe('tunnelRuntimeFor', () => {
+  it('passes the tunnel outcome through for a plain-HTTP relay', () => {
+    expect(tunnelRuntimeFor('http://my-mac.tailnet.ts.net:4000', false)).toEqual({ publicUrl: 'http://my-mac.tailnet.ts.net:4000' })
+    expect(tunnelRuntimeFor(null, false)).toEqual({ publicUrl: null })
+  })
+
+  it('drops an http:// tunnel URL when the relay serves TLS', () => {
+    expect(tunnelRuntimeFor('http://my-mac.tailnet.ts.net:4000', true)).toEqual({ publicUrl: null })
+    expect(tunnelRuntimeFor('HTTP://my-mac.tailnet.ts.net:4000', true)).toEqual({ publicUrl: null })
+  })
+
+  it('keeps an https:// tunnel URL when the relay serves TLS', () => {
+    expect(tunnelRuntimeFor('https://vps.example.com', true)).toEqual({ publicUrl: 'https://vps.example.com' })
+  })
+})
 
 describe('startConfiguredTunnel', () => {
   let exitSpy: MockInstance

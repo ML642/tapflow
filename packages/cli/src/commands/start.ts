@@ -1,11 +1,13 @@
 import { RelayServer, initDb, config, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost } from '@tapflowio/relay'
+import type { TunnelRuntime } from '@tapflowio/relay'
 import { AgentRegistry } from '@tapflowio/agent-core'
 import fs from 'fs'
 import path from 'path'
 import { requestAudioPermission, isAudioSupported } from '@tapflowio/ios-agent'
 import '@tapflowio/android-agent'
 import { banner, createSpinner, step, warn } from '../lib/print.js'
-import { startConfiguredTunnel } from '../lib/tunnel-runner.js'
+import { startConfiguredTunnel, tunnelRuntimeFor } from '../lib/tunnel-runner.js'
+import { isPortFree } from '../lib/port-available.js'
 import type { TunnelPlugin } from '../lib/tunnel.js'
 
 export interface StartOptions {
@@ -40,7 +42,7 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
     requestAudioPermission(false)
   }
 
-  // ── 1. Relay (always local) ───────────────────────────────────────────────
+  // ── 1. Relay setup (always local) ─────────────────────────────────────────
   if (!fs.existsSync(path.join(process.cwd(), 'tapflow.config.json'))) {
     warn('tapflow.config.json not found — using defaults. Run tapflow init to configure.')
   }
@@ -62,23 +64,42 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
   // The co-located agent connects over localhost; the agent accepts the domain cert there (see isLocalhostWss).
   const relayUrl = `${wsScheme}://localhost:${RELAY_PORT}`
 
-  const proxyWarning = proxyWithoutPublicUrlWarning(config)
-  if (proxyWarning) warn(proxyWarning)
-  const server = new RelayServer({ port: RELAY_PORT, uploadsDir: path.join(config.local.dataDir, 'uploads'), wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins: buildCorsOrigins(config, RELAY_PORT), tls })
-  await server.start()
-  const stopTls = certProvider ? startTlsBackgroundTasks(certProvider, server, config.tls) : null
-  step(`Relay started on ${httpScheme}://${displayHost}:${RELAY_PORT}`)
-
-  // ── 2. Tunnel (optional — publishes a public URL for teammates) ────────────
+  // ── 2. Tunnel, before the relay listens (optional — a public URL for teammates) ──
+  // The relay reads config, and config names a tunnel without saying whether it came up or at which
+  // address: a Tailscale URL is detected here, not configured (#794). So the tunnel starts first and its
+  // outcome goes to the relay, which uses it for invite links, dashboard links and CORS.
+  // What that order costs: a rathole relay listens only once its VPS setup is done, and a relay that fails
+  // to start leaves a tunnel to stop. The port is checked first because rathole's setupServer restarts the
+  // VPS-side server, and a second start doomed to fail on the port would take the running one's tunnel down.
   let tunnel: TunnelPlugin | null = null
   let publicUrl: string | null = null
+  let tunnelRuntime: TunnelRuntime | undefined
   if (config.tunnel) {
+    if (!(await isPortFree(RELAY_PORT))) {
+      throw new Error(`Port ${RELAY_PORT} is already in use. Stop the existing process and try again.`)
+    }
     const started = await startConfiguredTunnel(config.tunnel, RELAY_PORT)
     tunnel = started.tunnel
     publicUrl = started.publicUrl
+    tunnelRuntime = tunnelRuntimeFor(started.publicUrl, tls !== undefined)
   }
 
-  // ── 3. Agent availability check ───────────────────────────────────────────
+  // ── 3. Relay listens ──────────────────────────────────────────────────────
+  const proxyWarning = proxyWithoutPublicUrlWarning(config, tunnelRuntime)
+  if (proxyWarning) warn(proxyWarning)
+  let server: RelayServer
+  try {
+    // Construction is inside the try too: a TLS key that does not match its cert throws here.
+    server = new RelayServer({ port: RELAY_PORT, uploadsDir: path.join(config.local.dataDir, 'uploads'), wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins: buildCorsOrigins(config, RELAY_PORT, tunnelRuntime), tls, tunnel: tunnelRuntime })
+    await server.start()
+  } catch (err) {
+    await tunnel?.stop()
+    throw err
+  }
+  const stopTls = certProvider ? startTlsBackgroundTasks(certProvider, server, config.tls) : null
+  step(`Relay started on ${httpScheme}://${displayHost}:${RELAY_PORT}`)
+
+  // ── 4. Agent availability check ───────────────────────────────────────────
   if (platformsToRun.length === 0) {
     banner('success', 'TAPFLOW RELAY READY', [
       `Relay  : ${httpScheme}://${displayHost}:${RELAY_PORT}`,
@@ -94,7 +115,7 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
 
   const agents: Array<{ disconnect(): void }> = []
 
-  // ── 4. Connect each registered platform ──────────────────────────────────
+  // ── 5. Connect each registered platform ──────────────────────────────────
   for (const platform of platformsToRun) {
     const spinner = createSpinner(`Connecting ${platform} agent…`)
     spinner.start()

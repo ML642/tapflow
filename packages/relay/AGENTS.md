@@ -117,6 +117,7 @@ iOS build format: `.app.zip` **or** `.tar.gz`/`.tgz` (EAS `eas build` simulator 
   would move `agent offline` ahead of `Build not found`, changing which of two simultaneous problems the
   caller is told about.
 - JWTs are issued based on team invite links.
+- **Every address handed to someone else is decided in `lib/publicUrl.ts`** — invite mail, the link the dashboard copies, CORS, and what `/api/v1/relay/host` reports. Never from the `Host` header (#6). A tunnel's `publicUrl` is for teammates' browsers and `relay.url` is where agents connect, so the endpoint reports them separately. **What a tunnel actually did beats what config says**: config names a tunnel but not whether it came up or at which address (Tailscale's is detected, #794), so an entry point that starts one passes the outcome as the `RelayServer` `tunnel` option, and the CLI starts the tunnel before the relay for that reason. No option means no entry point manages a tunnel, and config is trusted — the standalone `server.ts` case. `scripts/__tests__/teammateUrlsSingleSource.test.mjs` holds that only `publicUrl.ts` and `config.ts` read those two settings.
 - Serves the `public/` directory as HTTP static files (dashboard build output).
 - The relay does not buffer stream data — it forwards immediately on arrival.
 - WebSocket upgrade requests and regular HTTP requests are split on the same port.

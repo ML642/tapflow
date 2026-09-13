@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/table'
 import { UserPlus } from 'lucide-react'
 import { toast } from 'sonner'
+import { joinPath, loadTeammateBases } from '@/lib/publicLink'
 
 type Member = { id: number; email: string; display_name: string; role: string; joined_at: string }
 
@@ -34,12 +35,14 @@ type InviteData = z.infer<typeof inviteSchema>
 const inviteResponseSchema = z.object({
   token: z.string(),
   emailSent: z.boolean(),
+  inviteUrl: z.string().nullable(),
 })
 
 export function TeamSettings() {
   const [members, setMembers] = useState<Member[]>([])
   const [resetSent, setResetSent] = useState<Record<number, string>>({})
   const [inviteLink, setInviteLink] = useState('')
+  const [linkCopied, setLinkCopied] = useState(false)
   const [inviteOpen, setInviteOpen] = useState(false)
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null)
 
@@ -65,13 +68,20 @@ export function TeamSettings() {
       })
       if (!res.ok) throw new Error(`Server error: ${res.status}`)
       const json = inviteResponseSchema.parse(await res.json())
-      const link = `${location.origin}/invite?token=${json.token}`
+      // The relay returns the link it mailed (#788). It has none to offer when its only address is one a
+      // teammate cannot open, and then the link is built from the teammate base.
+      const link = json.inviteUrl ?? joinPath((await loadTeammateBases()).linkBase, `/invite?token=${json.token}`)
+      // A plain-HTTP page has no clipboard API. That is a copy that did not happen, not a failed invite.
+      const copied = await (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject(new Error('no clipboard')))
+        .then(() => true, () => false)
       setInviteLink(link)
-      navigator.clipboard.writeText(link).catch(() => {})
+      setLinkCopied(copied)
       if (json.emailSent) {
         toast.success(`Invite email sent to ${data.email}`)
-      } else {
+      } else if (copied) {
         toast.warning('Invite link copied — email could not be sent. Check your SMTP settings.')
+      } else {
+        toast.warning('Email could not be sent. Copy the invite link from the dialog, and check your SMTP settings.')
       }
     } catch {
       toast.error('Failed to create invite link')
@@ -80,7 +90,7 @@ export function TeamSettings() {
 
   function handleDialogClose(open: boolean) {
     setInviteOpen(open)
-    if (!open) { setInviteLink(''); reset() }
+    if (!open) { setInviteLink(''); setLinkCopied(false); reset() }
   }
 
   async function handleRoleChange(id: number, role: string) {
@@ -138,7 +148,7 @@ export function TeamSettings() {
             <DialogHeader><DialogTitle>Invite team member</DialogTitle></DialogHeader>
             {inviteLink ? (
               <div className="flex flex-col gap-3 pt-2">
-                <p className="text-sm text-muted-foreground">Invite link copied to clipboard:</p>
+                <p className="text-sm text-muted-foreground">{linkCopied ? 'Invite link copied to clipboard:' : 'Copy this invite link:'}</p>
                 <code className="rounded bg-muted px-3 py-2 text-xs break-all">{inviteLink}</code>
                 <Button onClick={() => setInviteOpen(false)}>Done</Button>
               </div>

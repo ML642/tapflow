@@ -20,14 +20,17 @@ vi.mock('@tapflowio/ios-agent', () => ({ requestAudioPermission: vi.fn(), isAudi
 vi.mock('@tapflowio/android-agent', () => ({}))
 
 const mockTunnel = { stop: vi.fn() }
-vi.mock('../../lib/tunnel-runner.js', () => ({
+vi.mock('../../lib/tunnel-runner.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/tunnel-runner.js')>()),
   startConfiguredTunnel: vi.fn(),
 }))
+vi.mock('../../lib/port-available.js', () => ({ isPortFree: vi.fn() }))
 
 import { execSync } from 'node:child_process'
-import { RelayServer, initDb, config, createCertProvider, resolveRelayDisplayHost } from '@tapflowio/relay'
+import { RelayServer, initDb, config, createCertProvider, resolveRelayDisplayHost, buildCorsOrigins, proxyWithoutPublicUrlWarning } from '@tapflowio/relay'
 import { AgentRegistry } from '@tapflowio/agent-core'
 import { startConfiguredTunnel } from '../../lib/tunnel-runner.js'
+import { isPortFree } from '../../lib/port-available.js'
 import { cmdStart } from '../../commands/start.js'
 
 const mockExecSync = vi.mocked(execSync)
@@ -91,6 +94,7 @@ describe('cmdStart', () => {
     vi.mocked(config).tunnel = null
     vi.mocked(config).tls = null
     vi.mocked(startConfiguredTunnel).mockResolvedValue({ tunnel: mockTunnel as never, publicUrl: 'http://my-mac.tailnet.ts.net:4000' })
+    vi.mocked(isPortFree).mockResolvedValue(true)
   })
 
   afterEach(() => {
@@ -304,6 +308,72 @@ describe('cmdStart', () => {
 
       expect(output.join('\n')).toContain('localhost:4000')
       expect(output.join('\n')).not.toContain('Public :')
+    })
+
+    it('터널이 없으면 tunnel 옵션을 넘기지 않고 포트도 따로 확인하지 않는다', async () => {
+      await cmdStart({ platform: 'ios' })
+      expect(vi.mocked(RelayServer).mock.calls[0][0].tunnel).toBeUndefined()
+      expect(isPortFree).not.toHaveBeenCalled()
+    })
+
+    // #794: the relay reads config, and config names a tunnel without saying whether it came up or at
+    // which address. The CLI knows, so it starts the tunnel first and hands the outcome over.
+    describe('실제 터널 결과를 relay에 넘긴다', () => {
+      beforeEach(() => {
+        vi.mocked(config).tunnel = { provider: 'tailscale' }
+      })
+
+      it('터널이 RelayServer 생성보다 먼저 시작된다', async () => {
+        await cmdStart({ platform: 'ios' })
+        expect(vi.mocked(startConfiguredTunnel).mock.invocationCallOrder[0])
+          .toBeLessThan(vi.mocked(RelayServer).mock.invocationCallOrder[0])
+      })
+
+      it('터널 결과와 그 결과로 계산한 CORS 목록이 RelayServer에 도착한다', async () => {
+        vi.mocked(buildCorsOrigins).mockImplementation((_cfg, _port, tunnel) => (tunnel ? ['sentinel'] : []))
+        await cmdStart({ platform: 'ios' })
+        const runtime = { publicUrl: 'http://my-mac.tailnet.ts.net:4000' }
+        expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ tunnel: runtime, corsOrigins: ['sentinel'] }))
+        expect(proxyWithoutPublicUrlWarning).toHaveBeenCalledWith(config, runtime)
+      })
+
+      it('터널이 시작을 보고하지 못하면 publicUrl null을 넘긴다', async () => {
+        vi.mocked(startConfiguredTunnel).mockResolvedValue({ tunnel: null, publicUrl: null })
+        await cmdStart({ platform: 'ios' })
+        expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ tunnel: { publicUrl: null } }))
+      })
+
+      it('TLS relay에는 http:// 터널 주소를 넘기지 않는다', async () => {
+        vi.mocked(config).tls = { mode: 'import-cert', certPath: '/cert.pem', keyPath: '/key.pem' }
+        vi.mocked(createCertProvider).mockReturnValue({
+          ensureCert: vi.fn().mockResolvedValue({ cert: 'CERT', key: 'KEY' }),
+        } as never)
+        vi.mocked(resolveRelayDisplayHost).mockReturnValue('relay.example.com')
+        await cmdStart({ platform: 'ios' })
+        expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ tunnel: { publicUrl: null } }))
+      })
+
+      it('relay 시작이 실패하면 터널을 멈추고 원래 오류를 전파한다', async () => {
+        const failure = new Error('Port 4000 is already in use. Stop the existing process and try again.')
+        vi.mocked(RelayServer).mockImplementation(function () { return { start: vi.fn().mockRejectedValue(failure) } as never })
+        await expect(cmdStart({ platform: 'ios' })).rejects.toBe(failure)
+        expect(mockTunnel.stop).toHaveBeenCalled()
+      })
+
+      it('RelayServer 생성자가 던져도 터널을 멈춘다', async () => {
+        const failure = new Error('key values mismatch')
+        vi.mocked(RelayServer).mockImplementation(function () { throw failure })
+        await expect(cmdStart({ platform: 'ios' })).rejects.toBe(failure)
+        expect(mockTunnel.stop).toHaveBeenCalled()
+      })
+
+      it('포트가 이미 쓰이면 터널도 relay도 시작하지 않는다', async () => {
+        vi.mocked(isPortFree).mockResolvedValue(false)
+        await expect(cmdStart({ platform: 'ios' })).rejects.toThrow('already in use')
+        expect(isPortFree).toHaveBeenCalledWith(4000)
+        expect(startConfiguredTunnel).not.toHaveBeenCalled()
+        expect(RelayServer).not.toHaveBeenCalled()
+      })
     })
   })
 })

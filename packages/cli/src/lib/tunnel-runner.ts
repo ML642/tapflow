@@ -1,4 +1,4 @@
-import type { TapflowConfig } from '@tapflowio/relay'
+import type { TapflowConfig, TunnelRuntime } from '@tapflowio/relay'
 import { RatholeTunnel } from './rathole-tunnel.js'
 import { TailscaleTunnel } from './tailscale-tunnel.js'
 import { step, warn } from './print.js'
@@ -37,4 +37,14 @@ export async function startConfiguredTunnel(tunnelCfg: TunnelConfig, port: numbe
     console.warn(`Tunnel failed to start: ${err instanceof Error ? err.message : String(err)}`)
     return { tunnel: null, publicUrl: null }
   }
+}
+
+/**
+ * What the relay is told about the tunnel that was just started. A TLS relay answers only HTTPS on its
+ * port, and a detected Tailscale URL is always http://, so passing that on would put an address nothing
+ * answers into mail, dashboard links and CORS. The relay then behaves as if the tunnel offered no address.
+ */
+export function tunnelRuntimeFor(publicUrl: string | null, relayUsesTls: boolean): TunnelRuntime {
+  if (publicUrl && relayUsesTls && /^http:\/\//i.test(publicUrl)) return { publicUrl: null }
+  return { publicUrl }
 }

@@ -498,10 +498,10 @@ Body (JSON):
 **응답 `201`**
 
 ```json
-{ "token": "abc123...", "emailSent": true }
+{ "token": "abc123...", "emailSent": true, "inviteUrl": "http://192.168.0.10:4000/invite?token=abc123..." }
 ```
 
-SMTP가 설정되지 않은 경우 `emailSent: false`가 반환됩니다. `token` 값을 사용해 `<relay-url>/invite?token=<token>` 링크를 직접 공유하세요.
+SMTP가 설정되지 않은 경우 `emailSent: false`가 반환됩니다. `inviteUrl`은 초대 이메일의 링크와 같으며 릴레이의 공개 주소로 만듭니다. 실행 중인 터널이 있으면 그 `publicUrl`을 쓰고 없으면 `relay.url`(`TAPFLOW_RELAY_URL`)을 씁니다. 팀원이 열 수 있는 주소가 설정되지 않았으면 `null`입니다. 이때는 팀원이 접속하는 릴레이 주소로 `<relay-url>/invite?token=<token>` 링크를 직접 만드세요.
 
 
 ### `PATCH /api/v1/team/members/:id`

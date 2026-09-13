@@ -498,10 +498,10 @@ Body (JSON):
 **Response `201`**
 
 ```json
-{ "token": "abc123...", "emailSent": true }
+{ "token": "abc123...", "emailSent": true, "inviteUrl": "http://192.168.0.10:4000/invite?token=abc123..." }
 ```
 
-If SMTP is not configured, `emailSent: false` is returned. Use the `token` to build the invite link: `<relay-url>/invite?token=<token>`.
+If SMTP is not configured, `emailSent: false` is returned. `inviteUrl` is the link the invitation email carries, built from the relay's public address: a running tunnel's `publicUrl`, otherwise `relay.url` (`TAPFLOW_RELAY_URL`). It is `null` when no address a teammate can open is configured. In that case, build the link from the address teammates use to reach the relay: `<relay-url>/invite?token=<token>`.
 
 
 ### `PATCH /api/v1/team/members/:id`

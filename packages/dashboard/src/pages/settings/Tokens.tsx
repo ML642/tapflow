@@ -22,25 +22,9 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { Plus, Trash2 } from 'lucide-react'
+import { loadTeammateBases } from '@/lib/publicLink'
 
 type TokenType = 'api' | 'agent'
-
-// agent 실행 커맨드에 박을 릴레이 WS 주소. 뷰어가 localhost로 접속했다면 그 주소는
-// 에이전트 Mac에서 자기 자신을 가리키므로, 릴레이가 알려주는 LAN 주소로 치환한다 (#271).
-async function resolveRelayWsBase(): Promise<string> {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const viewerIsLocal = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
-  if (viewerIsLocal) {
-    try {
-      const res = await fetch('/api/v1/relay/host', { credentials: 'include' })
-      if (res.ok) {
-        const { lanHost, port } = await res.json() as { lanHost: string | null; port: number }
-        if (lanHost) return `${proto}://${lanHost}:${port}`
-      }
-    } catch { /* 폴백 */ }
-  }
-  return `${proto}://${window.location.host}`
-}
 
 type Token = { id: number; name: string; scope: string; last_used_at: string | null; expires_at: string | null; created_at: string }
 
@@ -92,7 +76,8 @@ export function TokenSettings() {
         return
       }
       const json = await res.json() as { token: string }
-      if (tokenType === 'agent') setAgentWsBase(await resolveRelayWsBase())
+      // Looked up only for an agent token: the relay address matters only to the command shown for one.
+      if (tokenType === 'agent') setAgentWsBase((await loadTeammateBases()).agentWsBase)
       toast.success('Token created')
       setNewToken(json.token)
       load()
