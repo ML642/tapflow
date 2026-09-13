@@ -199,6 +199,14 @@ JWT_SECRET=$(openssl rand -hex 32) pm2 start tapflow --name relay -- relay start
 pm2 save && pm2 startup
 ```
 
+**Or run the relay with Docker:**
+
+```sh
+docker run -d -p 4000:4000 -v "$PWD/data:/app/.tapflow/data" tapflow/tapflow:latest
+```
+
+> The image is the relay only — agents stay on your Macs. The volume is required (it holds the sign-in secret), and invite links need `TAPFLOW_RELAY_URL`. See [Docker Compose](https://www.tapflow.dev/guide/self-hosting#docker-compose-lan-server) for the full setup.
+
 **Each Mac agent:**
 
 ```sh
