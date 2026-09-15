@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   ensureCert: vi.fn().mockResolvedValue({ cert: 'CERT', key: 'KEY' }),
   resolveRelayDisplayHost: vi.fn(() => 'relay.example.com'),
   tls: { mode: 'import-cert', certPath: '/cert.pem', keyPath: '/key.pem' } as const,
+  containerWarning: vi.fn((): string | null => null),
+  inContainer: vi.fn(() => false),
 }))
 
 vi.mock('@tapflowio/agent-core', () => ({
@@ -31,7 +33,9 @@ vi.mock('../lib/config.js', () => ({
 vi.mock('../lib/proxyConfig.js', () => ({
   buildCorsOrigins: vi.fn(() => []),
   proxyWithoutPublicUrlWarning: vi.fn(() => null),
+  containerWithoutPublicUrlWarning: mocks.containerWarning,
 }))
+vi.mock('../lib/lanAddress.js', () => ({ runningInContainer: mocks.inContainer }))
 vi.mock('../lib/cert/index.js', () => ({
   createCertProvider: vi.fn(() => ({ ensureCert: mocks.ensureCert })),
   resolveRelayDisplayHost: mocks.resolveRelayDisplayHost,
@@ -41,6 +45,8 @@ vi.mock('../lib/tlsTasks.js', () => ({ startTlsBackgroundTasks: vi.fn(() => () =
 describe('relay server startup output', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.inContainer.mockReturnValue(false)
+    mocks.containerWarning.mockReturnValue(null)
     vi.resetModules()
     vi.spyOn(process, 'on').mockImplementation(() => process)
   })
@@ -53,5 +59,16 @@ describe('relay server startup output', () => {
     await vi.waitFor(() => expect(mocks.start).toHaveBeenCalled())
     expect(mocks.resolveRelayDisplayHost).toHaveBeenCalledWith(mocks.tls, 'CERT', expect.any(Function))
     expect(mocks.info).toHaveBeenCalledWith('tapflow relay running at https://relay.example.com:4000')
+  })
+
+  it('logs the container warning, deciding with the real container check', async () => {
+    mocks.inContainer.mockReturnValue(true)
+    mocks.containerWarning.mockReturnValue('Running in a container with no public URL')
+
+    await import('../server.js')
+
+    await vi.waitFor(() => expect(mocks.start).toHaveBeenCalled())
+    expect(mocks.containerWarning).toHaveBeenCalledWith(expect.objectContaining({ relay: { url: null } }), true)
+    expect(mocks.warn).toHaveBeenCalledWith('Running in a container with no public URL')
   })
 })

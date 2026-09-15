@@ -18,7 +18,9 @@ import { resolveClientAddress } from './lib/clientAddress.js'
 import { BuildTicketStore } from './lib/buildTickets.js'
 import { resolveCorsHeaders } from './lib/cors.js'
 import { isCsrfBlocked } from './lib/csrf.js'
-import { pickLanAddress } from './lib/lanAddress.js'
+import { pickLanAddress, runningInContainer } from './lib/lanAddress.js'
+import { config } from './lib/config.js'
+import { forTeammates, resolveAgentRelayUrl, resolvePublicBaseUrl, type TunnelRuntime } from './lib/publicUrl.js'
 import { createTrailingRequester, systemTimerScheduler, type TrailingRequester } from './lib/trailingRequester.js'
 import { getDb } from './db.js'
 import { handleLogin, handleLogout, handleMe, handleChangePassword, handleInit, handleAuthStatus } from './api/auth.js'
@@ -281,7 +283,7 @@ export class RelayServer {
     timer: ReturnType<typeof setTimeout>
   }>()
 
-  constructor(private readonly options: { port: number; publicDir?: string; uploadsDir?: string; idleTimeoutMs?: number; wsBackpressureBytes?: number; screenshotTimeoutMs?: number; uiTreeTimeoutMs?: number; trustedProxies?: string[]; corsOrigins?: string[]; tls?: { cert: string; key: string }; agentGraceMs?: number }) {
+  constructor(private readonly options: { port: number; publicDir?: string; uploadsDir?: string; idleTimeoutMs?: number; wsBackpressureBytes?: number; screenshotTimeoutMs?: number; uiTreeTimeoutMs?: number; trustedProxies?: string[]; corsOrigins?: string[]; tls?: { cert: string; key: string }; agentGraceMs?: number; tunnel?: TunnelRuntime }) {
     this.backpressureBytes = options.wsBackpressureBytes ?? DEFAULT_BACKPRESSURE_BYTES
     this.screenshotTimeoutMs = options.screenshotTimeoutMs ?? 10_000
     // Longer than the screenshot default: the Android agent's device-side dump
@@ -374,7 +376,7 @@ export class RelayServer {
 
     // team
     this.router.get('/api/v1/team/members', handleListMembers)
-    this.router.post('/api/v1/team/invite', handleInvite)
+    this.router.post('/api/v1/team/invite', (req, res) => handleInvite(req, res, this.options.tunnel))
     this.router.patch('/api/v1/team/members/:id', handleUpdateMember)
     this.router.delete('/api/v1/team/members/:id', handleDeleteMember)
     this.router.post('/api/v1/team/members/:id/send-reset', handleSendMemberReset)
@@ -403,13 +405,21 @@ export class RelayServer {
       res.end(JSON.stringify(this.logBuffer.slice(-lines)))
     })
 
-    // relay host — 대시보드가 agent 실행 커맨드에 박을 LAN 주소 (뷰어가 localhost로 접속한 경우의 치환용, #271)
+    // What the dashboard needs to build an address for someone else (#271, #788): a link base for a
+    // teammate's browser and an agent address, reported separately because they come from different
+    // settings (see lib/publicUrl.ts). Config comes from the singleton, as in the team handlers; whether a
+    // tunnel actually came up is known only to the entry point that started it, hence the `tunnel` option.
     this.router.get('/api/v1/relay/host', (req, res) => {
       if (!requireAuth(req, res)) return
       const addr = this.httpServer.address()
       const port = typeof addr === 'object' && addr !== null ? addr.port : this.options.port
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ lanHost: pickLanAddress(os.networkInterfaces()), port }))
+      res.end(JSON.stringify({
+        lanHost: runningInContainer() ? null : pickLanAddress(os.networkInterfaces()),
+        port,
+        publicBaseUrl: forTeammates(resolvePublicBaseUrl(config, this.options.tunnel)),
+        agentRelayUrl: forTeammates(resolveAgentRelayUrl(config)),
+      }))
     })
 
     // agent resources

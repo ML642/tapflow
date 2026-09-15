@@ -2,7 +2,8 @@ import path from 'path'
 import { initDb } from './db.js'
 import { RelayServer } from './RelayServer.js'
 import { config, loadedEnvPath } from './lib/config.js'
-import { buildCorsOrigins, proxyWithoutPublicUrlWarning } from './lib/proxyConfig.js'
+import { buildCorsOrigins, containerWithoutPublicUrlWarning, proxyWithoutPublicUrlWarning } from './lib/proxyConfig.js'
+import { runningInContainer } from './lib/lanAddress.js'
 import { bootstrapAdminFromEnv, AdminBootstrapError } from './lib/adminBootstrap.js'
 import { createCertProvider, resolveRelayDisplayHost } from './lib/cert/index.js'
 import { startTlsBackgroundTasks } from './lib/tlsTasks.js'
@@ -42,6 +43,8 @@ delete process.env.TAPFLOW_ADMIN_EMAIL
 const corsOrigins = buildCorsOrigins(config, port)
 const proxyWarning = proxyWithoutPublicUrlWarning(config)
 if (proxyWarning) logger.warn(proxyWarning)
+const containerWarning = containerWithoutPublicUrlWarning(config, runningInContainer())
+if (containerWarning) logger.warn(containerWarning)
 
 async function main(): Promise<void> {
   let tls: { cert: string; key: string } | undefined
@@ -60,6 +63,8 @@ async function main(): Promise<void> {
     )
   }
 
+  // No `tunnel` option: this entry point starts no tunnel, so it has no runtime state to report and the
+  // relay trusts config — an operator may run the tunnel alongside. See lib/publicUrl.ts.
   const server = new RelayServer({ port, uploadsDir, wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins, tls })
   await server.start()
   logger.info(`tapflow relay running at ${tls ? 'https' : 'http'}://${displayHost}:${port}`)

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { pickLanAddress } from '../lib/lanAddress'
+import { describe, it, expect, vi } from 'vitest'
+import { pickLanAddress, runningInContainer } from '../lib/lanAddress'
 import type os from 'os'
 
 type Iface = os.NetworkInterfaceInfo
@@ -41,5 +41,27 @@ describe('pickLanAddress', () => {
       utun5: [v4('100.101.102.103')],
       en0: [v4('192.168.0.10')],
     })).toBe('192.168.0.10')
+  })
+
+  // Measured in tapflow/tapflow:latest on the default bridge: the only candidate is the bridge address,
+  // and it is "private", so it wins. That is why the endpoint asks runningInContainer() first.
+  it('picks the bridge address inside a container, which is why the caller must not trust it there', () => {
+    expect(pickLanAddress({
+      lo: [v4('127.0.0.1', true), v6('::1', true)],
+      eth0: [v4('172.17.0.2')],
+    })).toBe('172.17.0.2')
+  })
+})
+
+describe('runningInContainer', () => {
+  it('reports what the marker check says', () => {
+    expect(runningInContainer(() => true)).toBe(true)
+    expect(runningInContainer(() => false)).toBe(false)
+  })
+
+  it('checks the Docker marker file', () => {
+    const exists = vi.fn(() => false)
+    runningInContainer(exists)
+    expect(exists).toHaveBeenCalledWith('/.dockerenv')
   })
 })

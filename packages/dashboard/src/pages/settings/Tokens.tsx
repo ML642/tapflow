@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -22,25 +22,9 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { Plus, Trash2 } from 'lucide-react'
+import { loadTeammateBases } from '@/lib/publicLink'
 
 type TokenType = 'api' | 'agent'
-
-// agent 실행 커맨드에 박을 릴레이 WS 주소. 뷰어가 localhost로 접속했다면 그 주소는
-// 에이전트 Mac에서 자기 자신을 가리키므로, 릴레이가 알려주는 LAN 주소로 치환한다 (#271).
-async function resolveRelayWsBase(): Promise<string> {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const viewerIsLocal = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
-  if (viewerIsLocal) {
-    try {
-      const res = await fetch('/api/v1/relay/host', { credentials: 'include' })
-      if (res.ok) {
-        const { lanHost, port } = await res.json() as { lanHost: string | null; port: number }
-        if (lanHost) return `${proto}://${lanHost}:${port}`
-      }
-    } catch { /* 폴백 */ }
-  }
-  return `${proto}://${window.location.host}`
-}
 
 type Token = { id: number; name: string; scope: string; last_used_at: string | null; expires_at: string | null; created_at: string }
 
@@ -60,6 +44,11 @@ export function TokenSettings() {
   const [tokenType, setTokenType] = useState<TokenType>('api')
   const [agentWsBase, setAgentWsBase] = useState('')
   const [revokeTarget, setRevokeTarget] = useState<number | null>(null)
+  const tokenLabelId = useId()
+  const commandLabelId = useId()
+  const tokenRef = useRef<HTMLInputElement>(null)
+  // Toasts render outside the dialog, which an open dialog hides from assistive technology.
+  const [dialogStatus, setDialogStatus] = useState('')
 
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -73,7 +62,12 @@ export function TokenSettings() {
 
   useEffect(() => { load() }, [])
 
+  // The form is replaced by the token, which is shown once. Focus goes to it so it can be selected and copied
+  // by hand where there is no clipboard API.
+  useEffect(() => { if (newToken) tokenRef.current?.focus() }, [newToken])
+
   async function onCreate(data: FormData) {
+    setDialogStatus('')
     try {
       const res = await fetch('/api/v1/tokens', {
         method: 'POST',
@@ -89,21 +83,24 @@ export function TokenSettings() {
       if (!res.ok) {
         const err = await res.json().catch(() => null) as { error?: string } | null
         toast.error(err?.error ?? 'Failed to create token')
+        setDialogStatus(err?.error ?? 'Failed to create token')
         return
       }
       const json = await res.json() as { token: string }
-      if (tokenType === 'agent') setAgentWsBase(await resolveRelayWsBase())
+      // Looked up only for an agent token: the relay address matters only to the command shown for one.
+      if (tokenType === 'agent') setAgentWsBase((await loadTeammateBases()).agentWsBase)
       toast.success('Token created')
       setNewToken(json.token)
       load()
     } catch {
       toast.error('Network error')
+      setDialogStatus('Network error')
     }
   }
 
   function handleDialogClose(o: boolean) {
     setOpen(o)
-    if (!o) { setNewToken(''); setTokenType('api'); setAgentWsBase(''); reset() }
+    if (!o) { setNewToken(''); setTokenType('api'); setAgentWsBase(''); setDialogStatus(''); reset() }
   }
 
   async function handleRevoke(id: number): Promise<boolean> {
@@ -133,22 +130,31 @@ export function TokenSettings() {
           </DialogTrigger>
           <DialogContent className="sm:max-w-md">
             <DialogHeader><DialogTitle>Create token</DialogTitle></DialogHeader>
+            {/* Mounted before any outcome arrives, so a change is announced. */}
+            <p role="status" className="sr-only">{dialogStatus}</p>
             {newToken ? (
               <div className="flex flex-col gap-3 pt-2">
-                <p className="text-sm text-muted-foreground">Copy this token now — it won&apos;t be shown again.</p>
-                <code className="rounded bg-muted px-3 py-2 text-xs break-all font-mono">{newToken}</code>
+                <p id={tokenLabelId} className="text-sm text-muted-foreground">Copy this token now — it won&apos;t be shown again.</p>
+                {/* Fields rather than text: a keyboard user can only select what can take focus. */}
+                <Input ref={tokenRef} readOnly value={newToken} aria-labelledby={tokenLabelId} onFocus={(e) => e.currentTarget.select()} className="font-mono text-xs" />
                 {tokenType === 'agent' && agentWsBase && (
                   <>
-                    <p className="text-sm text-muted-foreground">Run this on the agent Mac to connect it to this relay:</p>
-                    <code className="rounded bg-muted px-3 py-2 text-xs break-all font-mono">
-                      {`tapflow agent start --relay ${agentWsBase} --token ${newToken}`}
-                    </code>
+                    <p id={commandLabelId} className="text-sm text-muted-foreground">Run this on the agent Mac to connect it to this relay:</p>
+                    <Input readOnly value={`tapflow agent start --relay ${agentWsBase} --token ${newToken}`} aria-labelledby={commandLabelId} onFocus={(e) => e.currentTarget.select()} className="font-mono text-xs" />
                   </>
                 )}
                 <Button onClick={() => {
-                  navigator.clipboard.writeText(newToken)
-                    .then(() => { toast.success('Token copied to clipboard'); setOpen(false) })
-                    .catch(() => toast.error('Failed to copy — copy manually'))
+                  // Cleared first, so a repeated failure changes the status again and is announced again.
+                  setDialogStatus('')
+                  // Absent on a plain-HTTP page; unchecked, the click throws before .catch is attached and nothing is shown.
+                  void (navigator.clipboard ? navigator.clipboard.writeText(newToken) : Promise.reject(new Error('no clipboard')))
+                    // Through the reset: a controlled dialog does not report this close through onOpenChange.
+                    .then(() => { toast.success('Token copied to clipboard'); handleDialogClose(false) })
+                    .catch(() => {
+                      toast.error('Failed to copy — copy manually')
+                      setDialogStatus('Could not copy the token. Select it and copy it by hand.')
+                      tokenRef.current?.focus()
+                    })
                 }}>
                   Copy & close
                 </Button>

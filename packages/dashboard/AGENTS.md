@@ -40,6 +40,7 @@ The audience is the whole team (PO, PM, designers, backend, QA) — not just QA.
   - This package used to hand-copy that inbound union as a local `RelayMessage`, and it drifted: three error types were `sessionId?` against protocol's required, `session:joined.capabilities` was optional against required, four members were declared with no `sessionId` the wire always carries, and four more were missing entirely. Nothing reported any of it. The name also collided with the relay's own `RelayMessage`, which is its *inbound* type — a different set.
   - **Do not type an injected test message with `as never` or a local shape.** Both accept anything, so the fixture is free to disagree with the wire and the suite will not say so. `useClipboardBridge.test.tsx` builds replies as `ClipboardBridgeMessage` via an annotation; when that replaced `as never`, five fixtures in `DeviceViewer.rebind.test.tsx` turned out to be sending a `device:booting` with no `sessionId` — a message the wire does not produce, and one that bypasses the viewer's session scoping.
 - **Dev server proxy**: `vite.config.ts` proxies `/api` and `/uploads` → `http://localhost:4000`.
+- **An address for someone else comes from `lib/publicLink.ts`** — an invite link, a link to a comment, the relay address in the agent command. The browser's own `location.origin` is right for this page and wrong for a teammate: on the Vite server it is `localhost:3001`, which is how #788 was found. The relay reports what its settings mean and the helper only falls back. `useRelay` is the exception, because it connects this page to its own relay. `scripts/__tests__/teammateUrlsSingleSource.test.mjs` fails on a `location` read other than `pathname`/`search`/`hash`/`hostname`/`protocol` outside the files it allows.
 - **Build order**: dashboard first → relay second (`agent-core → dashboard → relay`).
 
 ## Testing
@@ -294,4 +295,13 @@ and power to the frame. That gap is **platform parity, not accessibility** — t
 the toolbar buttons Android has, not to overlay the frame. Read it that way whenever a finding says a
 device control is unreachable: ask whether the control should exist in the DOM at all, and if it
 should, put it in the toolbar where the group rules above already say it belongs.
+
+### A toast fired while a dialog is open is not heard
+
+`<Toaster>` renders in place inside the app root, and an open Radix dialog sets `aria-hidden` on everything
+outside its portal. So a toast's live region is hidden for as long as the dialog stays open, and a
+screen-reader user hears nothing. An outcome that belongs to a dialog is said inside it, in a
+`role="status"` element mounted before the outcome arrives; `Team.tsx`'s invite dialog is the example. A
+value the user has to copy goes in a focusable read-only field, not a `<code>`: on a plain-HTTP page there
+is no clipboard API, and a keyboard user can only select what can take focus.
 

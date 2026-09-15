@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/table'
 import { UserPlus } from 'lucide-react'
 import { toast } from 'sonner'
+import { joinPath, loadTeammateBases } from '@/lib/publicLink'
 
 type Member = { id: number; email: string; display_name: string; role: string; joined_at: string }
 
@@ -34,12 +35,17 @@ type InviteData = z.infer<typeof inviteSchema>
 const inviteResponseSchema = z.object({
   token: z.string(),
   emailSent: z.boolean(),
+  inviteUrl: z.string().nullable(),
 })
 
 export function TeamSettings() {
   const [members, setMembers] = useState<Member[]>([])
   const [resetSent, setResetSent] = useState<Record<number, string>>({})
   const [inviteLink, setInviteLink] = useState('')
+  const [linkCopied, setLinkCopied] = useState(false)
+  const [inviteStatus, setInviteStatus] = useState('')
+  const linkLabelId = useId()
+  const linkRef = useRef<HTMLInputElement>(null)
   const [inviteOpen, setInviteOpen] = useState(false)
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null)
 
@@ -55,7 +61,13 @@ export function TeamSettings() {
 
   useEffect(() => { load() }, [])
 
+  // The form and the button that had focus are replaced by the link. Focus goes to the link, where it can be
+  // selected and copied by hand — the only way on a plain-HTTP page, which has no clipboard API.
+  useEffect(() => { if (inviteLink) linkRef.current?.focus() }, [inviteLink])
+
   async function onInvite(data: InviteData) {
+    // Cleared first, so a retry that fails the same way is announced again.
+    setInviteStatus('')
     try {
       const res = await fetch('/api/v1/team/invite', {
         method: 'POST',
@@ -65,22 +77,33 @@ export function TeamSettings() {
       })
       if (!res.ok) throw new Error(`Server error: ${res.status}`)
       const json = inviteResponseSchema.parse(await res.json())
-      const link = `${location.origin}/invite?token=${json.token}`
+      // The relay returns the link it mailed (#788). It has none to offer when its only address is one a
+      // teammate cannot open, and then the link is built from the teammate base.
+      const link = json.inviteUrl ?? joinPath((await loadTeammateBases()).linkBase, `/invite?token=${json.token}`)
+      // A plain-HTTP page has no clipboard API. That is a copy that did not happen, not a failed invite.
+      const copied = await (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject(new Error('no clipboard')))
+        .then(() => true, () => false)
       setInviteLink(link)
-      navigator.clipboard.writeText(link).catch(() => {})
+      setLinkCopied(copied)
+      // Toasts render outside the dialog, and an open dialog hides everything outside it from assistive
+      // technology, so the outcome is also said inside the dialog.
+      setInviteStatus(`${json.emailSent ? `Invite email sent to ${data.email}.` : 'Email could not be sent.'} ${copied ? 'Invite link copied to clipboard.' : 'Copy the invite link.'}`)
       if (json.emailSent) {
         toast.success(`Invite email sent to ${data.email}`)
-      } else {
+      } else if (copied) {
         toast.warning('Invite link copied — email could not be sent. Check your SMTP settings.')
+      } else {
+        toast.warning('Email could not be sent. Copy the invite link from the dialog, and check your SMTP settings.')
       }
     } catch {
       toast.error('Failed to create invite link')
+      setInviteStatus('Failed to create invite link.')
     }
   }
 
   function handleDialogClose(open: boolean) {
     setInviteOpen(open)
-    if (!open) { setInviteLink(''); reset() }
+    if (!open) { setInviteLink(''); setLinkCopied(false); setInviteStatus(''); reset() }
   }
 
   async function handleRoleChange(id: number, role: string) {
@@ -136,11 +159,13 @@ export function TeamSettings() {
           </DialogTrigger>
           <DialogContent className="sm:max-w-md">
             <DialogHeader><DialogTitle>Invite team member</DialogTitle></DialogHeader>
+            {/* Mounted before the outcome arrives, so the change is announced. */}
+            <p role="status" className="sr-only">{inviteStatus}</p>
             {inviteLink ? (
               <div className="flex flex-col gap-3 pt-2">
-                <p className="text-sm text-muted-foreground">Invite link copied to clipboard:</p>
-                <code className="rounded bg-muted px-3 py-2 text-xs break-all">{inviteLink}</code>
-                <Button onClick={() => setInviteOpen(false)}>Done</Button>
+                <p id={linkLabelId} className="text-sm text-muted-foreground">{linkCopied ? 'Invite link copied to clipboard:' : 'Copy this invite link:'}</p>
+                <Input ref={linkRef} readOnly value={inviteLink} aria-labelledby={linkLabelId} onFocus={(e) => e.currentTarget.select()} className="font-mono text-xs" />
+                <Button onClick={() => handleDialogClose(false)}>Done</Button>
               </div>
             ) : (
               <form onSubmit={handleSubmit(onInvite)} className="flex flex-col gap-4 pt-2">
