@@ -61,7 +61,8 @@ export interface SimulatorNetworkOptions {
   /** How often liveness is checked. Overridable so a test does not have to spend seconds of wall
    *  clock proving that a stale file is noticed; the threshold itself comes from the file. */
   livenessIntervalMs?: number
-  /** How long the state-file fallback waits for the provider to publish. Same reason as the interval
+  /** How long a confirmation waits: the state-file fallback for the provider to publish, and an
+   *  answer over XPC that still holds the previous rule for the provider to catch up. Same reason as the interval
    *  above: proving that a file which never catches up is refused should not cost three seconds. */
   filterConfirmDeadlineMs?: number
 }
@@ -112,11 +113,30 @@ const FILTER_CONFIRM_TIMEOUT_MS = 1_000
  * back *online* on a Mac with no traffic at all — that direction waits out `pulseSeconds(false)`,
  * 4.75s. Sizing this past that would hold the operation queue for six seconds on every failed
  * toggle. The case is no worse than it is today, where the same Mac has no answer at all.
+ *
+ * **The same window also bounds asking again over XPC** (`FILTER_XPC_RECHECK_MS` below), so a provider
+ * that keeps answering with the previous rule is refused inside it rather than after a second wait.
  */
 const FILTER_FILE_CONFIRM_DEADLINE_MS = 3_000
 
 /** Cheap enough to be indistinguishable from the file's own write, and coarse enough not to spin. */
 const FILTER_FILE_POLL_MS = 100
+
+/**
+ * How soon to ask again when the provider **answered** and was holding the rule from before the write.
+ *
+ * That answer is usually a provider one write behind, not a disagreement. The container app exits once
+ * the framework accepts the save, and the provider is handed the configuration afterwards. On a macOS
+ * 27.0 Mac the first ask after taking a device offline heard `[]` on four presses in four, and the next
+ * ask agreed every time; a synthetic run on the same host saw it on one add in ten, settled in 28ms. So
+ * a mismatch over XPC is asked again inside the deadline above, and only one that outlasts it is
+ * refused. One ask costs a host launch, about 13ms measured there, so 50ms leaves room for several
+ * without spinning.
+ *
+ * **Only an answer is asked again.** An ask that times out or is refused falls to the file channel as
+ * before, so the one-second timeout above is never multiplied by this loop.
+ */
+const FILTER_XPC_RECHECK_MS = 50
 
 /** Where the provider writes what it is enforcing. Both are tried: the first is where it lands on a
  *  healthy Mac, the second is the fallback it uses when that directory cannot be written. */
@@ -545,7 +565,17 @@ export class SimulatorNetwork {
     // provider's reply about nine times in ten and reject the very answer it was waiting for.
     const before = this.readFilterState()?.at ?? 0
     if (!await this.runFilterHost(wanted ? { add: [udid] } : { remove: [udid] })) return false
-    const seen = await this.confirmEnforcement(udid, wanted, before)
+    // **Asked again while the provider answers with the rule from before the write** — a provider one
+    // write behind, measured on macOS 27 (`FILTER_XPC_RECHECK_MS`). Only an answer over XPC is asked
+    // again: a missing answer was already handed to the file channel inside `confirmEnforcement`,
+    // which waits on its own terms. Worst case, a provider that dies mid-wait: this deadline, one ask
+    // timeout and the file deadline, seven seconds — inside the dashboard's eight.
+    const until = Date.now() + this.confirmDeadlineMs
+    let seen = await this.confirmEnforcement(udid, wanted, before)
+    while (seen?.from === 'xpc' && seen.enforcing && seen.rule.includes(udid) !== wanted && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, FILTER_XPC_RECHECK_MS))
+      seen = await this.confirmEnforcement(udid, wanted, before)
+    }
     if (!seen) return false
     if (!seen.enforcing) return false
     if (seen.rule.includes(udid) !== wanted) {

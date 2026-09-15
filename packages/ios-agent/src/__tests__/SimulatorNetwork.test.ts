@@ -53,6 +53,11 @@ function fakeHostBinary(dir: string, log: string, sleepMs = 0, failNth = 0): str
     // reaches the mismatch branch *through XPC*. Without it only the file channel ever disagrees,
     // so the channel name in that warning could be wrong for the path 99% of traffic takes.
     + `  [ -e "${dir}/CONFIRM_EMPTY" ] && { printf '{"enforcing":true,"rule":[],"pid":7}\\n'; exit 0; }\n`
+    // `CONFIRM_STALE_ONCE` answers **one** confirmation with the rule written inside it, then removes
+    // itself: a provider one write behind, which is what macOS 27 showed — the first ask after a write
+    // held the previous rule and the next one agreed. `CONFIRM_EMPTY` is the permanent form, and only
+    // the pair can tell a confirmation that waits from one that refuses.
+    + `  if [ -e "${dir}/CONFIRM_STALE_ONCE" ]; then S=$(cat "${dir}/CONFIRM_STALE_ONCE"); rm -f "${dir}/CONFIRM_STALE_ONCE"; printf '{"enforcing":true,"rule":%s,"pid":7}\\n' "$S"; exit 0; fi\n`
     + `  R=$(cat "${dir}/rule" 2>/dev/null || echo "")\n`
     + `  printf '{"enforcing":true,"rule":%s,"pid":1}\\n' "$(echo "$R" | ${ruleToJson})"\n`
     + `  exit 0\n`
@@ -1153,16 +1158,52 @@ describe('SimulatorNetwork', () => {
       nothingApplied()
     })
 
+    it('waits out a provider one write behind on the way offline instead of refusing', async () => {
+      // **The first press on macOS 27, measured.** Taking a device offline asked the provider right
+      // after the write and heard the rule from before it — `wanted offline, provider holds []`, over
+      // XPC, on four offline presses in four — and each press was refused and drawn as a Mac that is
+      // not set up. The next ask agreed every time. A confirmation that stops at its first answer turns
+      // that lag into `filter-unavailable`.
+      armed()
+      writeFileSync(join(dir, 'CONFIRM_STALE_ONCE'), '[]')
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const net = make()
+
+      await expect(net.setOffline(UDID, true)).resolves.toEqual({ offline: true, available: true })
+      const said = warn.mock.calls.flat().join(' ')
+      warn.mockRestore()
+      expect(existsSync(join(dir, 'CONFIRM_STALE_ONCE')), 'the stale answer was never asked for').toBe(false)
+      expect(rules().at(-1), 'the rule does not hold the device').toContain(UDID)
+      expect(said, 'a lag that resolved was logged as a disagreement').not.toContain('disagrees')
+    })
+
+    it('waits out a provider one write behind on the way back online', async () => {
+      // The same lag in the other direction: one online press in three on that host heard the device
+      // still held.
+      armed()
+      const net = make()
+      await expect(net.setOffline(UDID, true)).resolves.toEqual({ offline: true, available: true })
+      writeFileSync(join(dir, 'CONFIRM_STALE_ONCE'), JSON.stringify([UDID]))
+
+      await expect(net.setOffline(UDID, false)).resolves.toEqual({ offline: false, available: true })
+      expect(existsSync(join(dir, 'CONFIRM_STALE_ONCE')), 'the stale answer was never asked for').toBe(false)
+      expect(rules().at(-1) ?? '', 'the rule still holds the device').not.toContain(UDID)
+    })
+
     it('names the channel as xpc when the provider itself disagrees', async () => {
       // **The twin of the file case below, and the one the diagnostic field is mostly for.** XPC is the
       // channel almost every confirmation takes, so a `from` that is only ever asserted on the fallback
       // can be wrong exactly where it matters — measured: labelling the XPC answer `'file'` passed all
       // 83 tests. The state file here is fresh and correct; it is not consulted, because the ask
       // answered.
+      //
+      // A short deadline, because a provider that keeps disagreeing is now asked again until the
+      // confirmation deadline before it is refused. This test is about the refusal and what it logs,
+      // not about how long the wait is.
       armed()
       writeFileSync(join(dir, 'CONFIRM_EMPTY'), '')
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-      const net = make()
+      const net = make(undefined, 200)
 
       await expect(net.setOffline(UDID, true)).resolves.toEqual({
         offline: false, available: false, reason: 'filter-unavailable',

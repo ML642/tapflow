@@ -757,6 +757,16 @@ what it is holding — 0.26–0.74ms, measured — and `setOffline` refuses unle
 layer 1 and neither blocks traffic, so applying them alone tells the app it is offline while every
 request it makes succeeds, which is the sign-off this feature exists to prevent.
 
+**An answer holding the previous rule is asked again, not refused on sight.** The provider is handed
+the configuration after the container app exits, so the ask right behind a write can hear the rule from
+before it. Measured on a macOS 27.0 Mac on 2026-09-15: `wanted offline, provider holds []` over XPC on
+four offline presses in four, the next ask agreeing every time — and each of those presses was refused
+as `filter-unavailable`, which the dashboard draws as a Mac that is not set up, until a later toggle
+went through. So `applyAndConfirm` asks again every `FILTER_XPC_RECHECK_MS` while an answer keeps
+disagreeing, up to the confirmation deadline, and only a disagreement that outlasts it is refused and
+logged. Only an *answer* is asked again; a missing one goes to the file channel below, so the timeout
+in the next paragraph is never multiplied.
+
 **The confirmation's timeout is the mechanism, not a backstop.** A call made while the provider is
 dead does not fail — measured 3/3, it blocks to the caller's own deadline, because launchd holds the
 mach name while the process is away. One second: about thirty times a healthy round trip and an
