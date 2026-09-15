@@ -53,18 +53,29 @@ export function joinPath(base: string, path: string): string {
 
 let pending: Promise<TeammateBases> | null = null
 
+/** How long a caller waits for the relay before building from the viewer's own address. */
+export const LOOKUP_DEADLINE_MS = 3000
+
 /**
  * Asks the relay once per page. A refused or failed lookup resolves to the viewer fallback rather than
  * throwing: every caller is about to show or copy an address, and the browser's own is better than none.
  * A failure is not cached, so a session that expired and was renewed without a reload asks again.
+ *
+ * A lookup that never settles is a failure too. The cached promise is shared, so without a deadline one
+ * hung request would hold the invite dialog on "Creating link…" and stop every comment-link copy for the
+ * rest of the page.
  */
 export function loadTeammateBases(): Promise<TeammateBases> {
-  pending ??= fetch('/api/v1/relay/host', { credentials: 'include' })
+  if (pending) return pending
+  const controller = new AbortController()
+  const deadline = setTimeout(() => controller.abort(), LOOKUP_DEADLINE_MS)
+  pending = fetch('/api/v1/relay/host', { credentials: 'include', signal: controller.signal })
     .then((res) => (res.ok ? (res.json() as Promise<RelayHostInfo>) : Promise.reject(new Error(`relay host lookup: ${res.status}`))))
     .catch(() => {
       pending = null
       return null
     })
+    .finally(() => clearTimeout(deadline))
     .then((info) => {
       const { protocol, hostname, host, origin } = window.location
       return resolveTeammateBases(info, { protocol, hostname, host, origin })

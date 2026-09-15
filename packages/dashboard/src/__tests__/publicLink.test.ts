@@ -4,6 +4,7 @@ import {
   joinPath,
   loadTeammateBases,
   resetTeammateBasesForTests,
+  LOOKUP_DEADLINE_MS,
   type RelayHostInfo,
 } from '@/lib/publicLink'
 
@@ -83,7 +84,8 @@ describe('loadTeammateBases', () => {
     expect(fetchMock).toHaveBeenCalledTimes(0)
     const results = await Promise.all([loadTeammateBases(), loadTeammateBases(), loadTeammateBases()])
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/relay/host', { credentials: 'include' })
+    // The signal is what lets the deadline end a lookup that never settles.
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/relay/host', expect.objectContaining({ credentials: 'include', signal: expect.any(AbortSignal) }))
     expect(results.map((r) => r.linkBase)).toEqual(Array(3).fill('http://192.168.0.50:4000'))
   })
 
@@ -92,6 +94,26 @@ describe('loadTeammateBases', () => {
     await loadTeammateBases()
     await loadTeammateBases()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('gives up on a lookup that never settles, falls back, and does not cache it', async () => {
+    vi.useFakeTimers()
+    try {
+      // Settles only when aborted, as a real fetch does.
+      const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      }))
+      vi.stubGlobal('fetch', fetchMock)
+
+      const lookup = loadTeammateBases()
+      await vi.advanceTimersByTimeAsync(LOOKUP_DEADLINE_MS)
+      await expect(lookup).resolves.toEqual({ linkBase: 'http://localhost:3000', agentWsBase: 'ws://localhost:3000' })
+
+      void loadTeammateBases()
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each([

@@ -55,8 +55,8 @@ const CONFIG_READ = /\.(relay\??\.url|tunnel\??\.publicUrl)\b/
 const CONFIG_READERS = new Set(['packages/relay/src/lib/publicUrl.ts', 'packages/relay/src/lib/config.ts'])
 
 const HEADER_READS = [
-  ['headers.host', /\bheaders\.host\b/],
-  ["headers['host']", /\bheaders\[\s*['"`]host['"`]\s*\]/],
+  ['headers.host', /\bheaders\??\.host\b/],
+  ["headers['host']", /\bheaders(\?\.)?\[\s*['"`]host['"`]\s*\]/],
   ['host destructured from headers', /\{[^}]*\bhost\b[^}]*\}\s*=\s*[\w.]*\bheaders\b/],
   ['x-forwarded-proto', /x-forwarded-proto/i],
 ]
@@ -132,6 +132,8 @@ describe('the rules match what they are meant to', () => {
     'const origin = `http://${req.headers.host}`',
     'const h = headers["host"]',
     "const h = req.headers['host']",
+    'const h = req.headers?.host',
+    "const h = req.headers?.['host']",
     'const { host } = req.headers',
     "const proto = req.headers['x-forwarded-proto']",
   ])('relay: flags a header read outside the allowlist — %s', (line) => {
