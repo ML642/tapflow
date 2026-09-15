@@ -1,0 +1,7 @@
+---
+'@tapflowio/ios-agent': patch
+---
+
+**iOS input and streaming find SimulatorKit where Xcode 27 put it** ([#797](https://github.com/jo-duchan/tapflow/issues/797)). Xcode 27 moved `SimulatorKit.framework` out of the developer directory (`Contents/Developer/Library/PrivateFrameworks/`) into `Contents/SharedFrameworks/`. The touch and screen-capture helpers knew only the old location, so on a Mac whose only Xcode is 27 they could not start: no input reached the simulator and no stream opened. On a Mac where Xcode 27 is selected and an older Xcode is also in `/Applications`, they fell back to that Xcode's SimulatorKit instead; whether that worked against Xcode 27's simulator service was not tested. Both locations are now checked on the selected Xcode before any other Xcode is, and each helper logs the SimulatorKit it is about to load.
+
+**Bezels come back on every iPad and most iPhones.** Xcode 27 no longer lists a device's screen size in its `profile.plist` and publishes it in `capabilities.plist` instead, so a device whose frame is assembled from nine slices rather than one image lost its bezel. That is most of them: on Xcode 27, 104 of 129 device types — every iPad, Apple Watch and iPod touch, and the iPhone 6s through 13, 14, 14 Plus, SE, 16e and 17e. The 14 Pro models, Air, and every iPhone 15, 16, 17 and 18 model other than 16e and 17e draw their frame from one image and never lost it. The size is now read from either file; on Xcode 27.0 each of those 104 carries one, and on Xcode 26 it is read exactly as before.

@@ -38,7 +38,7 @@ function makeFailedProc(): FakeProc {
 }
 
 // The helper announces itself on stderr once it holds its HID client and is about to start
-// reading stdin (`touch-helper.swift:281`). Measured on a real simulator: 186–247ms after spawn
+// reading stdin (its `touch-helper ready` line). Measured on a real simulator: 186–247ms after spawn
 // (n=5), and a gesture written before it lands nothing at all — the frames sit in the pipe and
 // are drained in one go, collapsing a swipe into microseconds. So tests have to say when a helper
 // reached that point, and the window before it is a real state worth covering.

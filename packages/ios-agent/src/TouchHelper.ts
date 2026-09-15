@@ -18,7 +18,7 @@ const RESPAWN_LIMIT = 3
 const RESPAWN_WINDOW_MS = 30_000
 
 // The helper announces itself on stderr once it holds its HID client and is about to start
-// reading stdin (`touch-helper.swift:281`). Measured against a real simulator: 186–247ms after
+// reading stdin (its `touch-helper ready` line). Measured against a real simulator: 186–247ms after
 // spawn (n=5), and a gesture written before it lands *nothing* — the frames are buffered by the
 // pipe and then drained in one go, which collapses a swipe into microseconds and iOS reads it as
 // no gesture at all. So "the pipe is open" is not the same as "the device will act on this", and

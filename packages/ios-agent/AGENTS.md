@@ -423,6 +423,15 @@ Keyboard injection uses `IndigoHIDMessageForKeyboardArbitrary(usage, op)`.
 
 `SimctlWrapper` parses `deviceTypeIdentifier` into `Device.typeId` and passes it through.
 
+**Screen size** (nine-slice path only; the composite path derives it from `PhoneComposite.pdf`):
+`screenSizeFromDeviceType` reads `mainScreenWidth/Height/Scale` from the device type's `profile.plist`
+(Xcode ≤26) and otherwise the `integrated` entry of `capabilities.plist`'s `displays` (Xcode 27, which
+dropped the profile keys). Match on `displayType`, never the first entry: the same list carries `tvOut`,
+`carPlay` and a 7680×4320 `scene`. No measured install carries both (Xcode 26.6 ships a
+`capabilities.plist` without `displays`), so the order changes nothing today; the profile goes first so
+Xcode ≤26 keeps its path. With no size, `load()` returns `null` and the device shows no bezel —
+nothing reports it.
+
 **Button layout**: `PhoneComposite.pdf` contains no physical buttons. Buttons are separate PDF assets; placement data is in `chrome.json`'s `inputs[]`.
 
 Margin calculation (same logic as baguette `computeMargins`):
