@@ -87,8 +87,9 @@ const FILTER_HOST_TIMEOUT_MS = 15_000
  * 34ms, XPC 0.26–0.74ms, propagation under 55ms), and an eighth of the dashboard's 8s request
  * deadline, so a refusal arrives as a refusal rather than as a request that timed out.
  *
- * It is also how long the operation queue is held when things go wrong, which is the cost side: a
- * second device's toggle waits behind it. That is accepted rather than overlooked, and the
+ * It is also the least the operation queue is held when things go wrong, which is the cost side: a
+ * second device's toggle waits behind it. A provider that keeps answering with the previous rule holds
+ * it for the confirmation deadline on top (`FILTER_XPC_RECHECK_MS`). That is accepted rather than overlooked, and the
  * alternative was tried and reviewed out — confirming outside the queue lets the write and its
  * confirmation belong to different rules, which produced two ways of applying layers 2 and 3 over a
  * kernel that was not enforcing. `serialize` has the sequences.
@@ -123,18 +124,20 @@ const FILTER_FILE_CONFIRM_DEADLINE_MS = 3_000
 const FILTER_FILE_POLL_MS = 100
 
 /**
- * How soon to ask again when the provider **answered** and was holding the rule from before the write.
+ * How soon to ask again when the provider **answered**, but with the state from before the write.
  *
  * That answer is usually a provider one write behind, not a disagreement. The container app exits once
  * the framework accepts the save, and the provider is handed the configuration afterwards. On a macOS
- * 27.0 Mac the first ask after taking a device offline heard `[]` on four presses in four, and the next
- * ask agreed every time; a synthetic run on the same host saw it on one add in ten, settled in 28ms. So
- * a mismatch over XPC is asked again inside the deadline above, and only one that outlasts it is
- * refused. One ask costs a host launch, about 13ms measured there, so 50ms leaves room for several
- * without spinning.
+ * 27.0 Mac a tester's first offline press was refused on each of three tries, logged as the provider
+ * holding `[]`; a synthetic run there caught one add in ten holding the previous rule, settled 28ms
+ * later. It also answers `enforcing: false` when the write switched a disabled filter back on: after
+ * `--off`, the first ask did so five times in five, and the second, under 90ms after the write, agreed.
+ * So such an answer over XPC is asked again inside the deadline above, and only one that outlasts it is
+ * refused. One ask costs a host launch, 6–14ms measured there, so 50ms leaves room for several without
+ * spinning.
  *
- * **Only an answer is asked again.** An ask that times out or is refused falls to the file channel as
- * before, so the one-second timeout above is never multiplied by this loop.
+ * **Only an answer is asked again.** An ask that times out or is refused falls to the file channel with
+ * what is left of the deadline, so the one-second timeout above is never multiplied by this loop.
  */
 const FILTER_XPC_RECHECK_MS = 50
 
@@ -554,9 +557,10 @@ export class SimulatorNetwork {
    * confirmation agree with a rule its own request had not asked for, and the success path then
    * applied layers 2 and 3 for the wrong direction.
    *
-   * A mismatch is logged **with what was actually read**, and with the channel it was read from.
-   * Two agents writing the same rule cannot be told apart afterwards from a log that only records
-   * what each one expected — each is internally consistent and one of them is stale.
+   * A refusal is logged **with what was actually read**, the channel it was read from, and how many
+   * asks it took — the last answer, since a recheck may have asked several times. Two agents writing
+   * the same rule cannot be told apart afterwards from a log that only records what each one expected
+   * — each is internally consistent and one of them is stale.
    */
   private async applyAndConfirm(udid: string, wanted: boolean): Promise<boolean> {
     // **Read before the write, and read the file's own clock.** The fallback below needs to tell a
@@ -565,26 +569,41 @@ export class SimulatorNetwork {
     // provider's reply about nine times in ten and reject the very answer it was waiting for.
     const before = this.readFilterState()?.at ?? 0
     if (!await this.runFilterHost(wanted ? { add: [udid] } : { remove: [udid] })) return false
-    // **Asked again while the provider answers with the rule from before the write** — a provider one
-    // write behind, measured on macOS 27 (`FILTER_XPC_RECHECK_MS`). Only an answer over XPC is asked
-    // again: a missing answer was already handed to the file channel inside `confirmEnforcement`,
-    // which waits on its own terms. Worst case, a provider that dies mid-wait: this deadline, one ask
-    // timeout and the file deadline, seven seconds — inside the dashboard's eight.
-    const until = Date.now() + this.confirmDeadlineMs
+    // **Asked again while the provider's answer is one write behind** (`FILTER_XPC_RECHECK_MS`): either
+    // the rule from before the write, or `enforcing: false` from a filter this very write switched back
+    // on — every rule write enables it, and on macOS 27 the first ask after re-enabling answered
+    // not-enforcing five times in five, the second agreeing each time.
+    //
+    // Only an answer over XPC is asked again. A missing one goes to the file channel with what is left
+    // of the deadline, and the deadline is checked after each pause, so a failed toggle holds the
+    // operation queue for about the deadline plus one ask timeout — some four seconds — rather than the
+    // seven a fresh file wait at the end of a recheck came to.
+    const start = Date.now()
+    const until = start + this.confirmDeadlineMs
+    let asks = 1
     let seen = await this.confirmEnforcement(udid, wanted, before)
-    while (seen?.from === 'xpc' && seen.enforcing && seen.rule.includes(udid) !== wanted && Date.now() < until) {
+    while (seen?.from === 'xpc' && (!seen.enforcing || seen.rule.includes(udid) !== wanted)) {
       await new Promise((resolve) => setTimeout(resolve, FILTER_XPC_RECHECK_MS))
-      seen = await this.confirmEnforcement(udid, wanted, before)
+      if (Date.now() >= until) break
+      asks += 1
+      seen = await this.confirmEnforcement(udid, wanted, before, until)
     }
+    const took = `after ${asks} ask${asks === 1 ? '' : 's'}, ${Date.now() - start}ms`
     if (!seen) return false
-    if (!seen.enforcing) return false
+    if (!seen.enforcing) {
+      console.warn(`[network] filter is not enforcing for ${udid} ${took} (read over ${seen.from})`)
+      return false
+    }
     if (seen.rule.includes(udid) !== wanted) {
       console.warn(
         `[network] filter rule disagrees for ${udid}: wanted ${wanted ? 'offline' : 'online'}, ` +
-        `provider ${seen.pid} holds [${seen.rule.join(',')}] (read over ${seen.from})`,
+        `provider ${seen.pid} holds [${seen.rule.join(',')}] (read over ${seen.from}) ${took}`,
       )
       return false
     }
+    // A lag that resolved is logged too: the refusals in the field were the only evidence of it, and a
+    // Mac drifting toward the deadline should show up here before it starts refusing.
+    if (asks > 1) console.log(`[network] filter caught up for ${udid} ${took}`)
     return true
   }
 
@@ -612,11 +631,11 @@ export class SimulatorNetwork {
    * absent, disabled, or restarting.
    */
   private async confirmEnforcement(
-    udid: string, wanted: boolean, since: number,
+    udid: string, wanted: boolean, since: number, deadline?: number,
   ): Promise<{ enforcing: boolean; rule: string[]; pid: number; from: 'xpc' | 'file' } | undefined> {
     const asked = await this.askProvider()
     if (asked) return asked
-    return await this.readConfirmation(udid, wanted, since)
+    return await this.readConfirmation(udid, wanted, since, deadline)
   }
 
   /** The XPC channel. Its own failures are all the same answer, so none of them are distinguished. */
@@ -658,9 +677,12 @@ export class SimulatorNetwork {
    * rather than believed, and `Heartbeat.remove()` means absence is what a *stopped* filter leaves.
    */
   private async readConfirmation(
-    udid: string, wanted: boolean, since: number,
+    udid: string, wanted: boolean, since: number, deadline?: number,
   ): Promise<{ enforcing: boolean; rule: string[]; pid: number; from: 'file' } | undefined> {
-    const until = Date.now() + this.confirmDeadlineMs
+    // `deadline` is passed when this runs at the end of a recheck, which has already spent most of the
+    // confirmation deadline. Starting a fresh one here is what put that path's worst case past the
+    // dashboard's request deadline; given one, the file gets what is left, and always at least one read.
+    const until = deadline ?? Date.now() + this.confirmDeadlineMs
     for (;;) {
       const file = this.readFilterState()
       const now = Math.floor(Date.now() / 1000)

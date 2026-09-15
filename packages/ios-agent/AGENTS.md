@@ -759,13 +759,20 @@ request it makes succeeds, which is the sign-off this feature exists to prevent.
 
 **An answer holding the previous rule is asked again, not refused on sight.** The provider is handed
 the configuration after the container app exits, so the ask right behind a write can hear the rule from
-before it. Measured on a macOS 27.0 Mac on 2026-09-15: `wanted offline, provider holds []` over XPC on
-four offline presses in four, the next ask agreeing every time — and each of those presses was refused
-as `filter-unavailable`, which the dashboard draws as a Mac that is not set up, until a later toggle
-went through. So `applyAndConfirm` asks again every `FILTER_XPC_RECHECK_MS` while an answer keeps
-disagreeing, up to the confirmation deadline, and only a disagreement that outlasts it is refused and
-logged. Only an *answer* is asked again; a missing one goes to the file channel below, so the timeout
-in the next paragraph is never multiplied.
+before it. Seen on a macOS 27.0 Mac on 2026-09-15: the tester's first offline press was refused on
+each of three tries (four refusals logged, `wanted offline, provider holds []` over XPC) and one online
+press in three likewise, each drawn as a Mac that is not set up until the next press went through; a
+synthetic run on the same host caught one add in ten holding the previous rule, settled 28ms later.
+**The same lag also answers `enforcing: false`**, because every rule write switches the filter on: after
+`--off` on that host, the first ask behind the next write answered not-enforcing five times in five and
+the second agreed each time — a press on a Mac whose filter had been switched off was refused without
+a log line. So
+`applyAndConfirm` asks again every `FILTER_XPC_RECHECK_MS` while an answer keeps disagreeing, up to the
+confirmation deadline, and only a disagreement that outlasts it is refused. **Both outcomes say how many
+asks they took** — a lag that resolved is logged too — so a Mac drifting toward the deadline shows up
+before it starts refusing. Only an *answer* is asked again; a missing one goes to the file channel
+below with whatever is left of the deadline, so the timeout in the next paragraph is never multiplied
+and a failed toggle still holds the operation queue for about four seconds at most.
 
 **The confirmation's timeout is the mechanism, not a backstop.** A call made while the provider is
 dead does not fail — measured 3/3, it blocks to the caller's own deadline, because launchd holds the
