@@ -552,9 +552,44 @@ function modelIdentifierForType(typeIdentifier: string): string | null {
   }
 }
 
-// Reads mainScreenWidth/Height/Scale from CoreSimulator profile.plist.
-// Returns logical point dimensions (physical px ÷ scale).
-function loadProfileScreenSize(typeIdentifier: string): { width: number; height: number } | null {
+type ScreenSize = { width: number; height: number }
+
+// Physical px ÷ scale → logical points. A missing or non-positive value is no answer rather than a
+// wrong one.
+function pointSize(width: unknown, height: unknown, scale: unknown): ScreenSize | null {
+  if (typeof width !== 'number' || typeof height !== 'number' || typeof scale !== 'number') return null
+  if (width <= 0 || height <= 0 || scale <= 0) return null
+  return { width: Math.round(width / scale), height: Math.round(height / scale) }
+}
+
+// A device type's logical screen size, from its two plists as `plutil -convert json` reads them.
+//
+// Xcode ≤26 puts mainScreenWidth/Height/Scale on profile.plist. Xcode 27 removed them from every
+// profile and lists the device's displays in capabilities.plist instead (tddworks/baguette#35: 124
+// of 124 device types carry the keys on 26, 0 of 124 on 27). Only the `integrated` entry is the
+// device's own panel: the same list carries tvOut and carPlay at 720×480 and a resizable `scene` at
+// 7680×4320, so taking the first entry would size the bezel off the wrong one. Xcode 26.6 already
+// ships a capabilities.plist with no `displays`, which is why the profile is asked first.
+export function screenSizeFromDeviceType(profile: unknown, capabilities: unknown): ScreenSize | null {
+  if (typeof profile === 'object' && profile !== null) {
+    const p = profile as Record<string, unknown>
+    const legacy = pointSize(p.mainScreenWidth, p.mainScreenHeight, p.mainScreenScale)
+    if (legacy) return legacy
+  }
+  if (typeof capabilities !== 'object' || capabilities === null) return null
+  const inner = (capabilities as Record<string, unknown>).capabilities
+  if (typeof inner !== 'object' || inner === null) return null
+  const displays = (inner as Record<string, unknown>).displays
+  if (!Array.isArray(displays)) return null
+  for (const entry of displays) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const display = entry as Record<string, unknown>
+    if (display.displayType === 'integrated') return pointSize(display.width, display.height, display.scale)
+  }
+  return null
+}
+
+function loadProfileScreenSize(typeIdentifier: string): ScreenSize | null {
   try {
     const out = execFileSync('xcrun', ['simctl', 'list', 'devicetypes', '-j'])
     const types = (JSON.parse(out.toString())['devicetypes'] as Array<{
@@ -564,19 +599,15 @@ function loadProfileScreenSize(typeIdentifier: string): { width: number; height:
     const name = types.find(t => t.identifier === typeIdentifier)?.name
     if (!name) return null
 
-    const plistPath = join(PROFILES_DIR, `${name}.simdevicetype`, 'Contents', 'Resources', 'profile.plist')
+    const resourcesDir = join(PROFILES_DIR, `${name}.simdevicetype`, 'Contents', 'Resources')
+    const plistPath = join(resourcesDir, 'profile.plist')
     if (!existsSync(plistPath)) return null
+    const capabilitiesPath = join(resourcesDir, 'capabilities.plist')
 
-    const data = readPlistAsJson(plistPath) as {
-      mainScreenWidth?: number
-      mainScreenHeight?: number
-      mainScreenScale?: number
-    }
-    const w = data.mainScreenWidth
-    const h = data.mainScreenHeight
-    const s = data.mainScreenScale
-    if (!w || !h || !s || s <= 0) return null
-    return { width: Math.round(w / s), height: Math.round(h / s) }
+    return screenSizeFromDeviceType(
+      readPlistAsJson(plistPath),
+      existsSync(capabilitiesPath) ? readPlistAsJson(capabilitiesPath) : null,
+    )
   } catch {
     return null
   }
@@ -769,7 +800,7 @@ export class DeviceChromeLoader {
       const cornerW = cornerSize.width
       const cornerH = cornerSize.height  // should equal topHeight from sizing
 
-      // Get logical screen dimensions from CoreSimulator profile.plist
+      // Get logical screen dimensions from the device type's plists
       const screenSize = loadProfileScreenSize(typeIdentifier)
       if (!screenSize) return null
       const screenW = screenSize.width

@@ -8,6 +8,7 @@ status: living
 
 > This document records the SimulatorKit reverse-engineering done while implementing iOS touch/button injection for tapflow. It is a reference.
 > It is based on Xcode 26 (the SimulatorKit version at that time) and may change with future Xcode upgrades.
+> Xcode 27 moved the binary (below); whether anything inside it changed is recorded in §8 once verified.
 >
 > During the reverse engineering we referenced the analysis from [tddworks/baguette](https://github.com/tddworks/baguette) (Apache-2.0).
 
@@ -15,7 +16,26 @@ status: living
 
 ## 1. Binary overview
 
-**Path:** `$DEVELOPER_DIR/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit`
+**Path:**
+
+| Xcode | Location |
+|---|---|
+| ≤ 26 | `$DEVELOPER_DIR/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit` |
+| 27 | `$DEVELOPER_DIR/../SharedFrameworks/SimulatorKit.framework/SimulatorKit` (i.e. `Xcode.app/Contents/SharedFrameworks/`) |
+
+The Xcode 27 location is a **sibling** of `Contents/Developer`, so it cannot be reached by appending to
+what `xcode-select -p` prints. `touch-helper` and `screencapture-helper` probe both on the selected Xcode
+before scanning `/Applications` for another one. The order is the point: a scan that knew only the old
+path would, on a Mac with Xcode 26 and 27 side by side, load 26's SimulatorKit against the
+CoreSimulator that 27 installed — and still reach `touch-helper ready`, so nothing would look wrong.
+Each helper writes `info: SimulatorKit <path>` to stderr for that reason. Reported first by
+[baguette#28](https://github.com/tddworks/baguette/issues/28).
+
+To reproduce the Xcode 27 layout on a machine that has only Xcode 26, point `DEVELOPER_DIR` (which
+`xcode-select -p` honours) at a fake `Contents/Developer` made of symlinks into the real one minus
+`Library/PrivateFrameworks/SimulatorKit.framework`, with a **copy** of that framework under a sibling
+`SharedFrameworks/`. A copy rather than a symlink, so `lsof -p <pid>` on the running helper shows which
+file was mapped.
 
 - **Format:** Fat binary (Universal)
   - slice 0: x86_64, file offset `0x4000`, size `0x113e70`
@@ -458,7 +478,7 @@ The correct approach is to create and use `SimDeviceLegacyHIDClient` directly in
 | Keyboard (including Korean/English switch) | ✅ **implemented** — `IndigoHIDMessageForKeyboardArbitrary(usage, op)`. See §5. |
 | Device rotation | ✅ **implemented** — `rotation-helper`: sends a `GSEventTypeDeviceOrientationChanged` mach message directly to `PurpleWorkspacePort`. No Simulator.app needed. |
 | Scroll | not implemented — the `IndigoHIDMessageForScrollEventFromHIDEventRef` path is confirmed |
-| Xcode version compatibility | `SimDeviceLegacyHIDClient` + IOHIDDigitizerDispatch are for Xcode 26. Earlier versions use `SimDevice.sendHIDEvent:` |
+| Xcode version compatibility | `SimDeviceLegacyHIDClient` + IOHIDDigitizerDispatch are for Xcode 26. Earlier versions use `SimDevice.sendHIDEvent:`. Xcode 27 relocated the binary (§1); the symbols and calls in this document are not yet verified against it ([#797](https://github.com/jo-duchan/tapflow/issues/797)) |
 
 ---
 

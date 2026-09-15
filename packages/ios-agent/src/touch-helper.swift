@@ -39,39 +39,65 @@ let targetUDID = CommandLine.arguments[1]
 
 // MARK: - Framework loading
 
-func findDeveloperDir() -> String {
+// Xcode ≤26 ships SimulatorKit inside the developer dir. Xcode 27 moved it to Contents/SharedFrameworks,
+// a sibling of Contents/Developer, so appending to what xcode-select reports no longer reaches it.
+// Both are probed on the selected Xcode before any other Xcode is: with 26 and 27 side by side, a
+// fallback that knows only the old path loads 26's SimulatorKit against 27's CoreSimulator.
+func simulatorKitCandidates(_ developerDir: String) -> [String] {
+    let contents = (developerDir as NSString).deletingLastPathComponent
+    return [
+        (developerDir as NSString).appendingPathComponent("Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit"),
+        (contents as NSString).appendingPathComponent("SharedFrameworks/SimulatorKit.framework/SimulatorKit"),
+    ]
+}
+
+func findSimulatorKit() -> (developerDir: String, path: String?, searched: [String]) {
+    let defaultDir = "/Applications/Xcode.app/Contents/Developer"
+    var searched: [String] = []
+    func probe(_ d: String) -> String? {
+        let candidates = simulatorKitCandidates(d)
+        searched += candidates
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
     let pipe = Pipe()
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
     task.arguments = ["-p"]
     task.standardOutput = pipe
-    do { try task.run() } catch { return "/Applications/Xcode.app/Contents/Developer" }
+    do { try task.run() } catch {
+        let path = probe(defaultDir)
+        return (defaultDir, path, searched)
+    }
     task.waitUntilExit()
     let dir = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-    func hasSimKit(_ d: String) -> Bool {
-        FileManager.default.fileExists(atPath: (d as NSString).appendingPathComponent(
-            "Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit"))
-    }
-    if !dir.isEmpty && hasSimKit(dir) { return dir }
+    if !dir.isEmpty, let path = probe(dir) { return (dir, path, searched) }
+    // xcode-select may point to CLT which lacks SimulatorKit — scan /Applications
     let apps = (try? FileManager.default.contentsOfDirectory(atPath: "/Applications")) ?? []
     for app in apps.sorted() where app.hasPrefix("Xcode") && app.hasSuffix(".app") {
         let d = "/Applications/\(app)/Contents/Developer"
-        if hasSimKit(d) { return d }
+        if d != dir, let path = probe(d) { return (d, path, searched) }
     }
-    return dir.isEmpty ? "/Applications/Xcode.app/Contents/Developer" : dir
+    return (dir.isEmpty ? defaultDir : dir, nil, searched)
 }
 
-let developerDir = findDeveloperDir()
+let simulatorKit = findSimulatorKit()
+let developerDir = simulatorKit.developerDir
 
 guard dlopen("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator",
              RTLD_NOW | RTLD_GLOBAL) != nil else {
     if let e = dlerror() { fputs("error: CoreSimulator: \(String(cString: e))\n", stderr) }
     exit(1)
 }
-let simkitPath = (developerDir as NSString)
-    .appendingPathComponent("Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit")
+guard let simkitPath = simulatorKit.path else {
+    let searched = simulatorKit.searched.map { "  \($0)\n" }.joined()
+    fputs("error: SimulatorKit not found. Searched:\n\(searched)", stderr)
+    exit(1)
+}
+// Which SimulatorKit loaded is the one fact a machine with two Xcodes cannot show any other way.
+fputs("info: SimulatorKit \(simkitPath)\n", stderr)
 guard let skHandle = dlopen(simkitPath, RTLD_NOW | RTLD_GLOBAL) else {
     if let e = dlerror() { fputs("error: SimulatorKit: \(String(cString: e))\n", stderr) }
     exit(1)
