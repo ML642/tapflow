@@ -81,8 +81,8 @@ func targetDims(_ w: Int, _ h: Int) -> (Int, Int) {
 
 // Xcode ≤26 ships SimulatorKit inside the developer dir. Xcode 27 moved it to Contents/SharedFrameworks,
 // a sibling of Contents/Developer, so appending to what xcode-select reports no longer reaches it.
-// Both are probed on the selected Xcode before any other Xcode is: with 26 and 27 side by side, a
-// fallback that knows only the old path loads 26's SimulatorKit against 27's CoreSimulator.
+// Both are probed on the selected Xcode before any other Xcode is: with 27 selected and an older Xcode
+// in /Applications, a fallback that knows only the old path loads that older SimulatorKit instead.
 func simulatorKitCandidates(_ developerDir: String) -> [String] {
     let contents = (developerDir as NSString).deletingLastPathComponent
     return [
@@ -136,7 +136,7 @@ guard let simkitPath = simulatorKit.path else {
     fputs("error: SimulatorKit not found. Searched:\n\(searched)", stderr)
     exit(1)
 }
-// Which SimulatorKit loaded is the one fact a machine with two Xcodes cannot show any other way.
+// Which SimulatorKit is about to load is the one fact a machine with two Xcodes cannot show otherwise.
 fputs("info: SimulatorKit \(simkitPath)\n", stderr)
 guard dlopen(simkitPath, RTLD_NOW | RTLD_GLOBAL) != nil else {
     if let e = dlerror() { fputs("error: SimulatorKit load failed: \(String(cString: e))\n", stderr) }

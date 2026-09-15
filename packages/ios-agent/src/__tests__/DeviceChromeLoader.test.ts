@@ -8,7 +8,8 @@ const xcode26Profile = {
   mainScreenWidth: 1206, mainScreenHeight: 2622, mainScreenScale: 3,
   mainScreenWidthDPI: 460, mainScreenHeightDPI: 460,
 }
-// Xcode 26.6 already ships capabilities.plist, and its screen lives under a key nothing reads.
+// Xcode 26.6 already ships capabilities.plist. Where it states the screen at all (116 of 124 types),
+// that is under a key nothing reads.
 const xcode26Capabilities = {
   capabilities: {
     idiom: 'phone',
@@ -21,6 +22,9 @@ const integrated = { displayType: 'integrated', displayName: 'LCD', width: 1668,
 const scene = { displayType: 'scene', displayName: 'Resizable', width: 7680, height: 4320, scale: 3 }
 // `integrated` is deliberately not first, so picking the first display gets a different answer.
 const xcode27Capabilities = { capabilities: { displays: [tvOut, integrated, scene] } }
+// The iPad panel above is @2, so on it alone a scale fixed at 2 would pass. This is iPhone 17e's
+// integrated display on Xcode 27.0, @3, which loads there at 390×844.
+const phonePanel = { displayType: 'integrated', displayName: 'LCD', width: 1170, height: 2532, scale: 3 }
 
 describe('screenSizeFromDeviceType', () => {
   it('reads the profile on Xcode 26', () => {
@@ -31,6 +35,13 @@ describe('screenSizeFromDeviceType', () => {
     expect(screenSizeFromDeviceType(xcode27Profile, xcode27Capabilities)).toEqual({ width: 834, height: 1210 })
   })
 
+  it("divides by the display's own scale", () => {
+    expect(screenSizeFromDeviceType(xcode27Profile, { capabilities: { displays: [tvOut, phonePanel] } }))
+      .toEqual({ width: 390, height: 844 })
+  })
+
+  // No measured install carries both (26.6 has no `displays`, 27 no profile keys): this pins the
+  // order, not a shape that occurs.
   it('prefers the profile when both plists carry a size', () => {
     expect(screenSizeFromDeviceType(xcode26Profile, xcode27Capabilities)).toEqual({ width: 402, height: 874 })
   })
@@ -46,7 +57,11 @@ describe('screenSizeFromDeviceType', () => {
 
   it('has no size for a zero scale or a missing dimension', () => {
     expect(screenSizeFromDeviceType({ ...xcode26Profile, mainScreenScale: 0 }, null)).toBeNull()
-    const noWidth = { displayType: 'integrated', height: 2420, scale: 2 }
-    expect(screenSizeFromDeviceType(xcode27Profile, { capabilities: { displays: [noWidth] } })).toBeNull()
+    const { width: _w, ...noWidth } = phonePanel
+    const { height: _h, ...noHeight } = phonePanel
+    const { scale: _s, ...noScale } = phonePanel
+    for (const panel of [noWidth, noHeight, noScale]) {
+      expect(screenSizeFromDeviceType(xcode27Profile, { capabilities: { displays: [panel] } })).toBeNull()
+    }
   })
 })

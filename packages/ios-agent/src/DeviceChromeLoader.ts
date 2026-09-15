@@ -565,11 +565,12 @@ function pointSize(width: unknown, height: unknown, scale: unknown): ScreenSize 
 // A device type's logical screen size, from its two plists as `plutil -convert json` reads them.
 //
 // Xcode ≤26 puts mainScreenWidth/Height/Scale on profile.plist. Xcode 27 removed them from every
-// profile and lists the device's displays in capabilities.plist instead (tddworks/baguette#35: 124
-// of 124 device types carry the keys on 26, 0 of 124 on 27). Only the `integrated` entry is the
-// device's own panel: the same list carries tvOut and carPlay at 720×480 and a resizable `scene` at
-// 7680×4320, so taking the first entry would size the bezel off the wrong one. Xcode 26.6 already
-// ships a capabilities.plist with no `displays`, which is why the profile is asked first.
+// profile and lists the device's displays in capabilities.plist instead: 124 of 124 device types
+// carry the keys on Xcode 26.6, 0 of 129 on Xcode 27.0 (27A266a), where all 129 list `displays`.
+// Only the `integrated` entry is the device's own panel: the same list carries tvOut and carPlay at
+// 720×480 and a resizable `scene` at 7680×4320, so taking the first entry would size the bezel off
+// the wrong one. No measured install carries both (26.6 has no `displays`), so the order changes
+// nothing today; the profile goes first so Xcode ≤26 keeps the path it always took.
 export function screenSizeFromDeviceType(profile: unknown, capabilities: unknown): ScreenSize | null {
   if (typeof profile === 'object' && profile !== null) {
     const p = profile as Record<string, unknown>
@@ -771,8 +772,9 @@ export class DeviceChromeLoader {
       }
 
       // -----------------------------------------------------------------------
-      // Path B — nine-slice chrome: most device types, not only older ones. On Xcode 27, 104 of 129 —
-      // every iPad, iPhone 11–14, SE, 16e and 17e, and Apple Watch — have no PhoneComposite.pdf.
+      // Path B — nine-slice chrome: most device types, not only older ones. On Xcode 27, 104 of 129
+      // have no PhoneComposite.pdf: every iPad, Apple Watch and iPod touch, and the iPhone 6s through
+      // 13, 14, 14 Plus, SE, 16e and 17e. The composite ones are iPhone 14 Pro and later, bar 16e/17e.
       // Slices: topLeft/top/topRight/right/bottomRight/bottom/bottomLeft/left
       // -----------------------------------------------------------------------
       const imgs = chromeJson.images
