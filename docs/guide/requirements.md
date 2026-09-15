@@ -26,11 +26,11 @@ The relay has no such constraint. Only the machine running the **agent** needs A
 
 ### iOS
 
-- macOS 26 (26.x)
-- Xcode 26 (26.x) with iOS Simulator Runtime installed
+- macOS 26 (26.x) or 27 (27.x)
+- Xcode 26 (26.x) or 27 (27.x) with iOS Simulator Runtime installed
 
 ::: tip Newer versions
-When a new major version (e.g. Xcode 27) is released, supporting it is our top priority. Until that support lands, please stay on the verified versions above.
+When a new major version (e.g. Xcode 28) is released, supporting it is our top priority. Until that support lands, please stay on the verified versions above.
 :::
 
 ### Android
