@@ -774,7 +774,7 @@ export class DeviceChromeLoader {
       // -----------------------------------------------------------------------
       // Path B — nine-slice chrome: most device types, not only older ones. On Xcode 27, 104 of 129
       // have no PhoneComposite.pdf: every iPad, Apple Watch and iPod touch, and the iPhone 6s through
-      // 13, 14, 14 Plus, SE, 16e and 17e. The composite ones are iPhone 14 Pro and later, bar 16e/17e.
+      // 13, 14, 14 Plus, SE, 16e and 17e. Composite: the 14 Pro models, Air, and 15–18 bar 16e/17e.
       // Slices: topLeft/top/topRight/right/bottomRight/bottom/bottomLeft/left
       // -----------------------------------------------------------------------
       const imgs = chromeJson.images
