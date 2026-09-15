@@ -765,14 +765,16 @@ press in three likewise, each drawn as a Mac that is not set up until the next p
 synthetic run on the same host caught one add in ten holding the previous rule, settled 28ms later.
 **The same lag also answers `enforcing: false`**, because every rule write switches the filter on: after
 `--off` on that host, the first ask behind the next write answered not-enforcing five times in five and
-the second agreed each time — a press on a Mac whose filter had been switched off was refused without
-a log line. So
+the second agreed each time — so the first press on a device left running while the filter was
+switched off was refused, without a log line. (A device booted after that is fine: booting writes the
+rule, and the write switches the filter on.) So
 `applyAndConfirm` asks again every `FILTER_XPC_RECHECK_MS` while an answer keeps disagreeing, up to the
 confirmation deadline, and only a disagreement that outlasts it is refused. **Both outcomes say how many
 asks they took** — a lag that resolved is logged too — so a Mac drifting toward the deadline shows up
 before it starts refusing. Only an *answer* is asked again; a missing one goes to the file channel
 below with whatever is left of the deadline, so the timeout in the next paragraph is never multiplied
-and a failed toggle still holds the operation queue for about four seconds at most.
+and a failed confirmation holds the operation queue for about four seconds at most (the rule writes on
+either side of it are bounded separately, by `FILTER_HOST_TIMEOUT_MS`).
 
 **The confirmation's timeout is the mechanism, not a backstop.** A call made while the provider is
 dead does not fail — measured 3/3, it blocks to the caller's own deadline, because launchd holds the

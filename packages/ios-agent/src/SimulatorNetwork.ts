@@ -87,9 +87,9 @@ const FILTER_HOST_TIMEOUT_MS = 15_000
  * 34ms, XPC 0.26–0.74ms, propagation under 55ms), and an eighth of the dashboard's 8s request
  * deadline, so a refusal arrives as a refusal rather than as a request that timed out.
  *
- * It is also the least the operation queue is held when things go wrong, which is the cost side: a
- * second device's toggle waits behind it. A provider that keeps answering with the previous rule holds
- * it for the confirmation deadline on top (`FILTER_XPC_RECHECK_MS`). That is accepted rather than overlooked, and the
+ * It is also the most one ask holds the operation queue, which is the cost side: a second device's
+ * toggle waits behind it. A confirmation that fails holds it longer — up to the confirmation deadline,
+ * plus this timeout once when the last ask hangs. That is accepted rather than overlooked, and the
  * alternative was tried and reviewed out — confirming outside the queue lets the write and its
  * confirmation belong to different rules, which produced two ways of applying layers 2 and 3 over a
  * kernel that was not enforcing. `serialize` has the sequences.
@@ -575,9 +575,10 @@ export class SimulatorNetwork {
     // not-enforcing five times in five, the second agreeing each time.
     //
     // Only an answer over XPC is asked again. A missing one goes to the file channel with what is left
-    // of the deadline, and the deadline is checked after each pause, so a failed toggle holds the
+    // of the deadline, and the deadline is checked after each pause, so a failed confirmation holds the
     // operation queue for about the deadline plus one ask timeout — some four seconds — rather than the
-    // seven a fresh file wait at the end of a recheck came to.
+    // seven a fresh file wait at the end of a recheck came to. The rule writes on either side of it are
+    // bounded separately, by `FILTER_HOST_TIMEOUT_MS`.
     const start = Date.now()
     const until = start + this.confirmDeadlineMs
     let asks = 1
@@ -589,7 +590,12 @@ export class SimulatorNetwork {
       seen = await this.confirmEnforcement(udid, wanted, before, until)
     }
     const took = `after ${asks} ask${asks === 1 ? '' : 's'}, ${Date.now() - start}ms`
-    if (!seen) return false
+    if (!seen) {
+      // Every refusal says so, this one included: a provider restarting under launchd answers nothing
+      // over XPC and has removed its state file, and that used to cost four seconds and no line at all.
+      console.warn(`[network] filter gave no answer for ${udid} ${took}`)
+      return false
+    }
     if (!seen.enforcing) {
       console.warn(`[network] filter is not enforcing for ${udid} ${took} (read over ${seen.from})`)
       return false

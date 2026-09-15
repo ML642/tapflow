@@ -1225,6 +1225,38 @@ describe('SimulatorNetwork', () => {
       expect(said, 'an answer from XPC was reported as coming from the file').toContain('read over xpc')
     })
 
+    it('gives the file only what the recheck left of the deadline', async () => {
+      // **A bound a review found broken, held by timing because only timing shows it.** A provider that
+      // keeps answering with the wrong rule is asked again until the deadline; when its XPC channel goes
+      // away near the end, the fallback reads the file with what is left. Starting a fresh deadline there
+      // put the worst case near seven seconds, and let a late publication overturn a refusal the deadline
+      // had already reached. `NO_CONFIRM` is the fake's first check, so creating it mid-wait fails every
+      // later ask; `NO_STATE` keeps the file from answering at all.
+      armed()
+      writeFileSync(join(dir, 'CONFIRM_EMPTY'), '')
+      writeFileSync(join(dir, 'NO_STATE'), '')
+      let refusedAt = 0
+      const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        if (refusedAt === 0 && String(args[0]).includes('gave no answer')) refusedAt = Date.now()
+      })
+      const net = make(undefined, 2_000)
+      const goes = setTimeout(() => writeFileSync(join(dir, 'NO_CONFIRM'), ''), 1_700)
+      const began = Date.now()
+
+      await expect(net.setOffline(UDID, true)).resolves.toMatchObject({ reason: 'filter-unavailable' })
+      clearTimeout(goes)
+      const said = warn.mock.calls.flat().join(' ')
+      warn.mockRestore()
+      // Existence, so a refusal that says nothing cannot pass: this path used to leave no line at all.
+      expect(said, 'a refusal with no answer left no line').toMatch(/gave no answer for .* after \d+ asks?/)
+      // **Timed to the refusal, not to the call.** The rule writes before and after it run the fake
+      // host's shell pipeline, and counting them failed the first version of this test on correct code:
+      // about 1.5s against a 1.4s bound, with the broken version only 300ms slower. Timed here, with the
+      // XPC channel going 300ms before a 2s deadline, the file getting the remainder refuses near 2s plus
+      // one write and starting over lands near 3.7s plus one write.
+      expect(refusedAt - began, `refused ${refusedAt - began}ms after the request`).toBeLessThan(3_000)
+    })
+
     it('names the provider and the channel when the published rule disagrees', async () => {
       // A rule that landed as something else — a second writer, or a provider still holding the
       // previous one. The log is the only place this is visible, and it has to carry *what was read*
@@ -1290,7 +1322,7 @@ describe('SimulatorNetwork', () => {
       })
       const said = warn.mock.calls.flat().join(' ')
       warn.mockRestore()
-      expect(said, 'a filter that stayed off was refused without saying so').toMatch(/not enforcing for .* after \d+ asks/)
+      expect(said, 'a filter that stayed off was refused without saying so').toMatch(/not enforcing for .* after \d+ asks?/)
       nothingApplied()
     })
 
