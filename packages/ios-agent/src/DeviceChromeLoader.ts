@@ -715,7 +715,8 @@ export class DeviceChromeLoader {
       const scale        = 2
 
       // -----------------------------------------------------------------------
-      // Path A — composite PDF (all post-2020 iPhones)
+      // Path A — composite PDF: the minority, recent iPhones such as iPhone 17 Pro (16 of 129 device
+      // types on Xcode 27). Its screen size comes from the PDF, so it never needed the plists.
       // -----------------------------------------------------------------------
       const compositePdf = join(resourcesDir, 'PhoneComposite.pdf')
       if (existsSync(compositePdf)) {
@@ -770,7 +771,8 @@ export class DeviceChromeLoader {
       }
 
       // -----------------------------------------------------------------------
-      // Path B — nine-slice chrome (iPhone SE / older home-button devices)
+      // Path B — nine-slice chrome: most device types, not only older ones. On Xcode 27, 104 of 129 —
+      // every iPad, iPhone 11–14, SE, 16e and 17e, and Apple Watch — have no PhoneComposite.pdf.
       // Slices: topLeft/top/topRight/right/bottomRight/bottom/bottomLeft/left
       // -----------------------------------------------------------------------
       const imgs = chromeJson.images

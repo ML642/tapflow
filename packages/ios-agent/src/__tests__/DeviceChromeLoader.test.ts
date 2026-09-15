@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { screenSizeFromDeviceType } from '../DeviceChromeLoader'
 
 // Shapes as `plutil -convert json` reads the real files. The Xcode 26.6 ones are an iPhone 17 Pro's;
-// the Xcode 27 one follows tddworks/baguette#35, measured on Xcode 27 beta 3.
+// the Xcode 27 entries are an iPad Pro 11-inch (M4)'s on Xcode 27.0 (27A266a), trimmed to the keys read.
+// There every one of 129 device types lists `displays` and none keeps the profile keys.
 const xcode26Profile = {
   mainScreenWidth: 1206, mainScreenHeight: 2622, mainScreenScale: 3,
   mainScreenWidthDPI: 460, mainScreenHeightDPI: 460,
