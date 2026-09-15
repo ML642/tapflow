@@ -1,0 +1,5 @@
+---
+'@tapflowio/ios-agent': patch
+---
+
+**Taking an iOS simulator offline no longer fails on the first press with "This Mac is not set up"** ([#797](https://github.com/jo-duchan/tapflow/issues/797)). Right after writing the filter rule, the agent asked the network filter once what it was holding, and the filter could still answer with the rule from before the write. That answer was treated as a filter tapflow cannot control: the press was refused, the control said the Mac was not set up, and it kept saying so until a later toggle went through. In one session on a macOS 27 Mac the first offline press was refused on every try, and one press coming back online was too. The first press on a device left running while the filter was switched off met the same lag as a filter reporting itself off, and was refused without a log line. The agent now asks again for up to three seconds before refusing, so only a filter still holding the wrong rule, or still off, after that is reported, and every refusal or recovery is logged with how many asks it took.
