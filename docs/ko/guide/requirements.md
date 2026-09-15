@@ -26,11 +26,11 @@ tapflow가 개발과 검증에 사용해온 환경이 Apple Silicon입니다. In
 
 ### iOS
 
-- macOS 26 (26.x)
-- iOS Simulator Runtime이 설치된 Xcode 26 (26.x)
+- macOS 26 (26.x) 또는 27 (27.x)
+- iOS Simulator Runtime이 설치된 Xcode 26 (26.x) 또는 27 (27.x)
 
 ::: tip 새 버전 지원
-새로운 메이저 버전(예: Xcode 27)이 출시되면 버전 지원을 최우선으로 작업합니다. 지원이 추가되기 전까지는 위 검증된 버전을 사용해 주세요.
+새로운 메이저 버전(예: Xcode 28)이 출시되면 버전 지원을 최우선으로 작업합니다. 지원이 추가되기 전까지는 위 검증된 버전을 사용해 주세요.
 :::
 
 ### Android

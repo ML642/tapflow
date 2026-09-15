@@ -1,5 +1,12 @@
 # @tapflowio/flow-runner
 
+## 0.22.0
+
+### Patch Changes
+
+- @tapflowio/protocol@0.22.0
+- @tapflowio/agent-core@0.22.0
+
 ## 0.21.0
 
 ### Patch Changes

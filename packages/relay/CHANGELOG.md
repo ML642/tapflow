@@ -1,5 +1,26 @@
 # @tapflowio/relay
 
+## 0.22.0
+
+### Patch Changes
+
+- e2123d5: **The Mac Resources charts follow the clock now** ([#751](https://github.com/jo-duchan/tapflow/issues/751)). They were fetched once, when the page opened, and the window ended at that moment for as long as the page stayed open — so a monitoring screen showed nothing newer than when you arrived, and the space between the last time label and the right edge read as an axis skewed to one side. The window's edge now advances at a pace set by the range, labels enter on the right and fade out on the left, and the history is re-fetched on a cadence that matches what the relay stores: every minute on 1h and 6h, every five minutes on 24h, every fifteen on 7d. The charts stop advancing and refreshing while the tab is hidden, a history younger than its interval is not re-fetched on return, and a refresh that fails keeps the chart as it was instead of emptying it.
+
+  **The line reaches the present.** The relay stores one averaged sample a minute, so the newest stored point is up to a minute old. The Mac's latest report, sent every five seconds and already part of the dashboard's Mac list, ends each line in a dot, and is never stored. Hovering the dot, or pressing End on the chart, reads its value at the current time. It is dropped within ten seconds of turning 30 seconds old, the same bound within which the QA Session cards call a Mac stale.
+
+  **Time labels sit on local round times** ([#749](https://github.com/jo-duchan/tapflow/issues/749)). They were aligned in UTC, which is only round where the offset is a whole number of hours: in a 45-minute zone the 1h axis read 07:45, 07:55, and west of Greenwich a 7d label named the day before the midnight it marked. Across a daylight-saving change one gap is now 23 or 25 hours wide, because that day is 23 or 25 hours long.
+
+- a12ff53: **The invite link the dashboard copies is the one the invitation email carries** ([#788](https://github.com/jo-duchan/tapflow/issues/788)). The email was built from the relay's configured address, while the dialog rebuilt the link from whatever address your browser was on — so on the Vite dev server it copied `localhost:3001`, and an admin working on the relay Mac copied `localhost:4000`. The dialog now shows the relay's link. The same applies to "Copy link to comment" and to the relay address in the agent command under Settings → Tokens: with `TAPFLOW_RELAY_URL` (or `relay.url`) set, all three use it. With nothing set they keep your browser's address, except that a browser on `localhost` gets the relay's LAN address, which the agent command already did. The invite response gains an `inviteUrl` field, `null` when the relay has no address a teammate can open.
+
+  **A tunnel's address is the one it actually got** ([#794](https://github.com/jo-duchan/tapflow/issues/794)). Choosing Tailscale in `tapflow init` leaves `publicUrl` empty and `tapflow start` detects the MagicDNS name, but only the startup banner ever used it — invitations still pointed at `localhost:4000`. The tunnel now starts before the relay and hands over what it got, so invitations, dashboard links and the CORS allowlist use the detected address, and a tunnel that fails to start no longer leaves its configured address in any of them. A tunnel address is for teammates' browsers: the agent command uses `relay.url`, never the tunnel, so an agent on the relay's own network does not stream through it. If the port is already taken, the command now stops before touching the tunnel, rather than restarting a running instance's rathole server on its way to failing.
+
+  **Running the relay image without `TAPFLOW_RELAY_URL` is said out loud.** The relay logs a warning at startup when it runs in a container with no address a teammate can open, since invitations then point at `localhost`. Inside a container it also stops offering its bridge address (such as `172.17.0.2`) as the LAN address for the agent command.
+
+  **The invite dialog no longer claims a copy that did not happen.** It said "copied" even when the browser refused, and on a plain-HTTP page, which has no clipboard API, it reported the invitation itself as failed. The invite link, a new token and the agent command now sit in read-only fields that take focus, so on such a page they can be selected and copied by keyboard, and the invite dialog states its outcome to screen readers, which cannot hear a toast behind an open dialog. "Copy & close" on a new token no longer does nothing on a plain-HTTP page.
+
+  - @tapflowio/protocol@0.22.0
+  - @tapflowio/agent-core@0.22.0
+
 ## 0.21.0
 
 ### Minor Changes

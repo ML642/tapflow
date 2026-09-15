@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-16
+
+### Added
+
+- **Xcode 27 and macOS 27 are supported** ([#797](https://github.com/jo-duchan/tapflow/issues/797)). Checked on a Mac running macOS 27.0 with Xcode 27.0 as its only Xcode, through the dashboard and against the helpers directly. On an iOS 27.0 simulator: streaming, touch and gestures, hardware buttons, rotation, keyboard input including Korean composition, device bezels, the UI tree the MCP server and flows read, and taking the device off the network. On an iOS 26.5 runtime under the same Xcode, which is where most people are right after upgrading: touch, buttons, streaming and network control. Android emulators on that Mac boot, stream and take input as before, and Xcode 26 keeps working unchanged. [Requirements](https://www.tapflow.dev/guide/requirements) now lists both versions. The fixes this took are listed under Fixed below; installing and approving the network extension on a new Mac still has rough edges, tracked in [#799](https://github.com/jo-duchan/tapflow/issues/799).
+
 ### Fixed
 
 - **Taking an iOS simulator offline no longer fails on the first press with "This Mac is not set up"** ([#797](https://github.com/jo-duchan/tapflow/issues/797)). The agent asked the network filter what it was holding right after changing it, once, and could hear the rule from before the change; the press was refused and the control said the Mac was not set up until a later toggle went through. On a macOS 27 Mac that was nearly every first offline press, and the first press on a device left running while the filter was switched off. It now asks again for up to three seconds before refusing.
@@ -664,7 +670,8 @@ found out by waiting.
 
 - Automatic `tapflow.config.json` creation as a side effect of `tapflow start` / `tapflow relay start`.
 
-[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/jo-duchan/tapflow/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/jo-duchan/tapflow/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/jo-duchan/tapflow/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/jo-duchan/tapflow/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/jo-duchan/tapflow/compare/v0.19.0...v0.20.0
