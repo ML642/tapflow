@@ -380,9 +380,9 @@ command tells you when it is waiting on you.
 **A late approval still finishes in the same run.** The install waits up to two minutes for approval.
 If none has come and the command is running in an interactive terminal, it asks whether to open the
 approval screen. The question also says that switching the filter on can drop connections this Mac
-already has open, SSH sessions included. Say yes and it opens the screen, waits up to two more
-minutes for the tapflow entry to be switched on, then switches the filter on and confirms it is
-running. If macOS asks whether to allow tapflow to filter network content at that point, allow it.
+already has open, SSH sessions included. Say yes and it opens the screen and waits up to two more
+minutes for the tapflow entry to be switched on. If it is, the command switches the filter on and
+confirms it is running. If macOS asks whether to allow tapflow to filter network content at that point, allow it.
 
 **It never says the screen opened.** The command has no way to know whether a window appeared, so it
 shows the path alongside. If nothing appears, go there by that path.
@@ -392,8 +392,9 @@ simulator during the wait. If it finds one, it stops without switching the filte
 the filter is left off. With `--ignore-running-devices` it does not check again.
 
 Outside an interactive terminal it does not ask; it counts as interactive only when stdin and
-stdout are both terminals. There, and when you decline, it tells you to approve the extension and
-run the command again, and that run switches the filter on.
+stdout are both terminals. There, when you decline, and when the entry is not switched on within
+those two minutes, it ends waiting for approval and tells you to approve the extension and run the
+command again. That run switches the filter on.
 
 It **refuses to replace a filter newer than the one it carries**. `/Applications` holds one copy for
 the whole Mac while each install judges it by its own dependencies, so an older checkout would

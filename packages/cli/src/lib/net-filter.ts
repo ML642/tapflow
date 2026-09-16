@@ -385,6 +385,12 @@ export const APPROVAL_PATH = 'System Settings → General → Login Items & Exte
  * `restoreExecutableBits`) and none of the callers get as far as restoring it — `refused-host-unknown`
  * returns before the install does. Printed rather than performed so `doctor` stays read-only.
  *
+ * **Stopping tapflow is not a step here, and the guide's version has it.** A running iOS agent does
+ * switch the filter back on — every rule write is `.configure` — but it only ever runs
+ * `/Applications`' binary (`SimulatorNetwork`'s `DEFAULT_HOST_BINARY`, no override in production) and
+ * returns without running anything when that file is missing. Every caller of this is that state. The
+ * network control guide removes an extension whose app is still there, so it does say to stop tapflow.
+ *
  * **Nothing here can say whether step 1 worked.** `--off` prints nothing and exits 0 for "nothing to
  * disable" as well; what it did is the last line of `/tmp/tapflow-netfilter-host.log`. No sequence is
  * known where it exits 0 over an enabled configuration, so the steps do not ask anyone to check.

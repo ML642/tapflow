@@ -231,7 +231,7 @@ Switching the filter on can briefly drop connections this Mac already has open, 
 
 If no screen appears, go there by the path above. The command cannot tell whether the window opened, so it shows the path alongside.
 
-If you declined, or ran it somewhere other than a terminal, approve it and run the same command once more. That run switches the filter on.
+If you declined, ran it somewhere other than a terminal, or did not switch it on within those two extra minutes, the command ends still waiting for approval. Approve it and run the same command once more. That run switches the filter on.
 
 If a device came into use while it waited — a simulator booted, say — it stops without switching the filter on. It names what it found; stop that and run the command again.
 
@@ -273,7 +273,7 @@ Installing ends with a distinct code per kind of failure.
 | 1 | Activation failed |
 | 2 | Could not read the configuration |
 | 3 | Could not save the configuration |
-| 4 | Not approved within 120 seconds. Run from a terminal, the command asks whether to open the approval screen and keeps waiting; otherwise approve it in System Settings and run it again |
+| 4 | Not approved within 120 seconds. Run from a terminal, the command asks whether to open the approval screen and keeps waiting. If it is still not switched on after that, or there was no terminal, the command ends waiting for approval: approve it in System Settings and run it again |
 | 5 | The Mac has to restart for this to finish |
 | 6 | The system extension manager gave no answer within 45 seconds |
 | 7 | The running filter did not answer |

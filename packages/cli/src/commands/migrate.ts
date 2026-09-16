@@ -99,7 +99,7 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
     case 'needs-approval':
       banner('success', 'APPROVAL NEEDED', [
         `Installed to ${NET_FILTER_APP}, and macOS is waiting for you to allow it.`,
-        `${APPROVAL_PATH}, and switch tapflow on.`,
+        `Open ${APPROVAL_PATH} and switch tapflow on.`,
         // **Run again, not check.** Every way here — no terminal, the offer declined, or no switch
         // within the wait — leaves the filter off, and the rerun is what turns it on. Pointing at
         // `doctor` first only sent people to a line telling them to run this.
