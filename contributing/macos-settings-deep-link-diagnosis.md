@@ -31,11 +31,16 @@ extension point — was **not** tested, so nothing here says whether it also wor
 
 ## What does not
 
+Each row is a complete value — paste it into `open` as it stands. That matters more here than it
+looks: a URL you had to reassemble from a prefix and an identifier fails the same way a *wrong* URL
+does, and by the trap below, `open` answers `0` either way. A typo and a dead end are then
+indistinguishable.
+
 | URL | Where it lands |
 |---|---|
-| `com.apple.LoginItems-Settings.extension` | Login Items & Extensions, scrolled to the **top** — the per-app background-activity list. The Extensions categories are further down and it does not go there |
-| the same, plus `?ExtensionItems` | Identical. The anchor changes nothing observable |
-| `com.apple.NetworkExtensionSettingsUI.NESettingsUIExtension` | The **Network** pane. Useful-looking — it shows `Filter: Active` — but it is the filter's *configuration*, not the extension's approval toggle |
+| `x-apple.systempreferences:com.apple.LoginItems-Settings.extension` | Login Items & Extensions, scrolled to the **top** — the per-app background-activity list. The Extensions categories are further down and it does not go there |
+| `x-apple.systempreferences:com.apple.LoginItems-Settings.extension?ExtensionItems` | Identical to the row above. The anchor changes nothing observable |
+| `x-apple.systempreferences:com.apple.NetworkExtensionSettingsUI.NESettingsUIExtension` | The **Network** pane. Useful-looking — it shows `Filter: Active` — but it is the filter's *configuration*, not the extension's approval toggle |
 
 Those two locations are easy to confuse, and they are different things. **Network → Filter** reports
 whether a content filter configuration is enabled. **General → Login Items & Extensions → Network
