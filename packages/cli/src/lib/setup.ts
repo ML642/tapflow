@@ -1,7 +1,8 @@
 import { execSync, spawnSync } from 'node:child_process'
 import {
   installNetFilter, followThroughApproval, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, isFilterEnforcing,
-  isNetFilterCurrent, readNetFilterState, CONFIRM_DEADLINE_MS, NET_FILTER_APP, type InstallOptions,
+  isNetFilterCurrent, readNetFilterState, removalSteps, CONFIRM_DEADLINE_MS, NET_FILTER_APP,
+  type InstallOptions,
 } from './net-filter.js'
 import { existsSync, readFileSync, appendFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -255,7 +256,7 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
         label: 'Network filter',
         ok: false,
         warn: true,
-        detail: `Left alone — extension ${outcome.activated} is running but /Applications/TapflowNetFilter.app is gone, so tapflow cannot tell whether this Mac's filter is newer than this one. Reinstall from the tapflow whose version matches, or clear it: systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext`,
+        detail: `Left alone — extension ${outcome.activated} is running but /Applications/TapflowNetFilter.app is gone, so tapflow cannot tell whether this Mac's filter is newer than this one. Reinstall from the tapflow whose version matches, or clear it: ${removalSteps().join('; ')}.`,
       }
     case 'refused-downgrade':
       // Not a failure of this machine: it is set up for a newer tapflow than this one.

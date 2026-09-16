@@ -1,8 +1,8 @@
-import { banner, step } from '../lib/print.js'
+import { banner, step, DIM, R } from '../lib/print.js'
 import { migrateDataDir } from '../lib/migrate-data-dir.js'
 import {
   installNetFilter, followThroughApproval, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, CONFIRM_DEADLINE_MS,
-  NET_FILTER_APP, type InstallOptions,
+  NET_FILTER_APP, removalSteps, type InstallOptions,
 } from '../lib/net-filter.js'
 import { terminalApprovalDeps } from '../lib/approval-prompt.js'
 
@@ -162,8 +162,11 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
         'would replace a working filter somebody else depends on.',
         '',
         'Either reinstall from the tapflow whose version matches, or clear the extension and start over:',
-        '  systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext',
       ])
+      // **Outside the banner, because the banner wraps at 72 columns** and the first step carries a path
+      // into the package that is longer than that. Wrapped, it is two lines nobody can paste.
+      for (const s of removalSteps()) console.log(`${DIM}       ${s}${R}`)
+      console.log()
       process.exit(1)
       break
     case 'refused-downgrade':

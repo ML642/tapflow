@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Approving the network filter finishes the install in the same run** ([#799](https://github.com/jo-duchan/tapflow/issues/799)). When the install stopped waiting for macOS approval, `tapflow migrate net-filter` and `tapflow setup ios` printed where to approve it and exited with the filter switched off, so even an approval given straight away needed a second run. In an interactive terminal they now offer to open the approval screen, wait up to two minutes for the switch, and turn the filter on. The question itself says a yes ends with the Mac's open connections possibly dropping, SSH included, and the command declines to switch on over a simulator started while it waited — saying whether the filter is off when it does. Without an interactive terminal, or when the offer is declined, the banner now says to run the command again instead of pointing at `doctor`.
 
+### Fixed
+
+- **Removing the network extension is described in steps that work** ([#799](https://github.com/jo-duchan/tapflow/issues/799)). `tapflow doctor ios`, `tapflow setup ios`, `tapflow migrate net-filter` and the network control guide all said to run `systemextensionsctl uninstall`, which macOS refuses whenever System Integrity Protection is on, as it is on almost every Mac. They now say to switch the filter off first, then remove the extension in System Settings → General → Login Items & Extensions → Network Extensions, then restart the Mac to finish. When the app is already gone from `/Applications`, the commands print the exact switch-off command, which uses the binary inside the package.
+
 ## [0.22.0] - 2026-09-16
 
 ### Added

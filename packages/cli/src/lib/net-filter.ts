@@ -363,6 +363,41 @@ export type InstallStage = 'checking' | 'disabling' | 'copying' | 'activating' |
 export const APPROVAL_PATH = 'System Settings → General → Login Items & Extensions → Network Extensions'
 
 /**
+ * How to take the extension off this Mac, as the steps a person runs.
+ *
+ * **Not `systemextensionsctl uninstall`, which is what this used to say.** It refuses on any Mac with
+ * System Integrity Protection on — measured on macOS 27, 2026-09-17 — so the advice worked only on a
+ * Mac nobody runs this on. System Settings removes it instead, including when the app is already gone
+ * from `/Applications` (same measurement), and the removal finishes at the next restart: the list
+ * reads `terminated waiting to uninstall on reboot` until then.
+ *
+ * **Off first.** Removing an extension whose filter is on stops the provider with nothing to restart
+ * it, and that is the shape that left a Mac with no network until a restart during a replace (see
+ * `installNetFilter`). Not measured for a removal. The measured removal ran after `--off`, and the
+ * order costs one command.
+ *
+ * **With the binary this package carries**, because every caller is the state where `/Applications`
+ * has none. `--off` run from the package reaches the existing configuration (the first disable in
+ * `installNetFilter` records that measurement).
+ */
+export function removalSteps(): string[] {
+  const shipped = shippedAppPath()
+  const off = shipped
+    ? `${shellQuote(join(shipped, 'Contents', 'MacOS', 'TapflowNetFilter'))} --off`
+    : 'TapflowNetFilter --off, using the copy inside @tapflowio/ios-agent (bin/TapflowNetFilter.app/Contents/MacOS)'
+  return [
+    `1. Switch the filter off: ${off}`,
+    `2. Remove TapflowNetFilter in ${APPROVAL_PATH}, from the ⋯ button beside it`,
+    '3. Restart the Mac. The removal finishes then',
+  ]
+}
+
+/** Quoted only when it has to be, so the common path still reads as a path. Exported for its test. */
+export function shellQuote(s: string): string {
+  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+/**
  * What each stage says.
  *
  * **One map rather than a sentence in each command**, for the reason `isNetFilterCurrent` is

@@ -17,7 +17,7 @@ import {
   installNetFilter, readNetFilterState, extensionBundle, isFilterEnforcing, NET_FILTER_APP,
   INSTALL_STAGE_MESSAGE, type InstallStage,
   followThroughApproval, APPROVAL_SHEET_URL, APPROVAL_MESSAGE, APPROVAL_WAIT_MS,
-  type ApprovalDeps, type NeedsApproval,
+  type ApprovalDeps, type NeedsApproval, removalSteps, shellQuote,
 } from '../../lib/net-filter.js'
 import { runDoctorChecks } from '../../lib/doctor.js'
 import { runSetupIos } from '../../lib/setup.js'
@@ -1412,6 +1412,65 @@ describe('doctor — what it says about the filter', () => {
     // The version half is still true and says so: this is not a version problem, and telling someone
     // to upgrade would send them somewhere that cannot help.
     expect(version).toEqual({ label: 'Network filter version', ok: true })
+  })
+})
+
+describe('net filter — how to remove it', () => {
+  onMac()
+  beforeEach(() => { vi.resetAllMocks() })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  /** The one command the advice used to give, and the one a Mac with SIP on refuses. */
+  const REFUSED_UNDER_SIP = /systemextensionsctl uninstall/
+
+  it('switches the filter off with the binary this package carries, then removes, then restarts', () => {
+    machine({ installed: null })
+    const steps = removalSteps()
+    expect(steps.join('\n')).not.toMatch(REFUSED_UNDER_SIP)
+    // **This package's binary, not `/Applications`'s**: every caller is the state where that one is
+    // gone, so naming it would hand someone a command that cannot run.
+    const off = steps.findIndex((s) => s.includes(`${join(SHIPPED_APP, 'Contents', 'MacOS', 'TapflowNetFilter')} --off`))
+    const remove = steps.findIndex((s) => s.includes('System Settings') && s.includes('Network Extensions'))
+    const restart = steps.findIndex((s) => /Restart/.test(s))
+    expect(off, 'no step switches the filter off with the shipped binary').toBeGreaterThanOrEqual(0)
+    expect(remove, 'no step says where the removal happens').toBeGreaterThanOrEqual(0)
+    expect(restart, 'the removal only finishes at a restart, and nothing says so').toBeGreaterThanOrEqual(0)
+    // Off before the removal: removing an enforcing filter is the shape that took a Mac's network down.
+    expect([off, remove, restart]).toEqual([0, 1, 2])
+  })
+
+  it('still says what to switch off with when the package has no binary to name', () => {
+    machine({ shipped: null, installed: null })
+    const [off] = removalSteps()
+    expect(off).toMatch(/--off/)
+    expect(off).toMatch(/@tapflowio\/ios-agent/)
+  })
+
+  it('quotes a path only when a shell would split it', () => {
+    expect(shellQuote('/opt/tapflow/node_modules/@tapflowio/ios-agent/bin/X')).toBe('/opt/tapflow/node_modules/@tapflowio/ios-agent/bin/X')
+    expect(shellQuote('/Users/Jo Duchan/bin/X')).toBe(`'/Users/Jo Duchan/bin/X'`)
+    expect(shellQuote(`/Users/o'neil/bin/X`)).toBe(`'/Users/o'\\''neil/bin/X'`)
+  })
+
+  it('is what doctor gives for an extension whose app is gone', async () => {
+    machine({ installed: null, activated: OLDER })
+    const [check] = await netFilterChecks()
+    expect(check.detail).toMatch(/gone from \/Applications/)
+    expect(check.detail).not.toMatch(REFUSED_UNDER_SIP)
+    expect(check.detail).toContain(removalSteps().join('; '))
+  })
+
+  it('is what setup gives when it leaves such a Mac alone', async () => {
+    await onMacFor(async () => {
+      machine({ installed: null, activated: OLDER })
+      mockExecSyncForIos()
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      const step = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(step?.detail).toMatch(/^Left alone/)
+      expect(step?.detail).not.toMatch(REFUSED_UNDER_SIP)
+      expect(step?.detail).toContain(removalSteps().join('; '))
+    })
   })
 })
 

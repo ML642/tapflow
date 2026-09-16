@@ -10,7 +10,7 @@ vi.mock('../../lib/net-filter.js', async (actual) => ({
 }))
 
 import { cmdMigrateNetFilter } from '../../commands/migrate.js'
-import { installNetFilter, followThroughApproval, INSTALL_STAGE_MESSAGE } from '../../lib/net-filter.js'
+import { installNetFilter, followThroughApproval, INSTALL_STAGE_MESSAGE, removalSteps } from '../../lib/net-filter.js'
 
 const mockInstall = vi.mocked(installNetFilter)
 const mockFollow = vi.mocked(followThroughApproval)
@@ -136,6 +136,23 @@ describe('tapflow migrate net-filter — saying what it is waiting on', () => {
     opts?.onProgress?.('activating')
     const written = logged.mock.calls.slice(before).map((c) => String(c[0])).join('\n')
     expect(written).toContain(INSTALL_STAGE_MESSAGE.activating)
+  })
+})
+
+describe('tapflow migrate net-filter — an extension whose app is gone', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('process.exit') }) as never)
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('prints the removal steps rather than a command SIP refuses', async () => {
+    mockInstall.mockReturnValue({ status: 'refused-host-unknown', activated: '1787846299' } as never)
+    await expect(cmdMigrateNetFilter()).rejects.toThrow('process.exit')
+    const printed = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n')
+    expect(printed).not.toMatch(/systemextensionsctl uninstall/)
+    for (const s of removalSteps()) expect(printed).toContain(s)
   })
 })
 
