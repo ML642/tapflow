@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SHEET_OPENER_SCRIPT } from '../../lib/net-filter.js'
@@ -50,17 +50,30 @@ function opener(): string {
   return p
 }
 
-function run(list: string, bundle: string, looks: number, gap = '0.01') {
-  const started = Date.now()
+/**
+ * A stand-in `sleep` first on `PATH`, recording each gap it was asked for and returning at once. Counting
+ * sleeps is what tells a loop that waits from one that spins; timing it could not, because five runs
+ * of the stand-in lister already take longer than the gaps a fast test can afford.
+ */
+function sleeper(): string {
+  const bin = join(dir, 'bin')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'sleep'), `#!/bin/sh\nprintf '%s\\n' "$1" >> '${dir}/slept'\n`)
+  chmodSync(join(bin, 'sleep'), 0o755)
+  return bin
+}
+
+function run(list: string, bundle: string, looks: number, gap = '0.5') {
   const r = spawnSync('/bin/sh', ['-c', SHEET_OPENER_SCRIPT, 'test', list, bundle, opener(), URL, String(looks), gap], {
-    encoding: 'utf8', timeout: 10_000,
+    encoding: 'utf8', timeout: 10_000, env: { ...process.env, PATH: `${sleeper()}:${process.env.PATH ?? ''}` },
   })
+  const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : null)
   return {
     status: r.status,
     stderr: r.stderr,
-    ms: Date.now() - started,
-    opened: existsSync(join(dir, 'opened')) ? readFileSync(join(dir, 'opened'), 'utf8') : null,
-    looks: Number(readFileSync(join(dir, 'count'), 'utf8')),
+    opened: read('opened'),
+    looks: Number(read('count')),
+    slept: (read('slept') ?? '').split('\n').filter(Boolean),
   }
 }
 
@@ -69,6 +82,8 @@ describe('the approval sheet opener', () => {
     const r = run(lister(ENABLED, 2, WAITING), BUNDLE, 20)
     expect(r.opened).toBe(`${URL}\n`)
     expect(r.looks).toBe(3)
+    // Two gaps, before the look that opened; none after it.
+    expect(r.slept).toHaveLength(2)
     expect(r.status).toBe(0)
   })
 
@@ -86,21 +101,24 @@ describe('the approval sheet opener', () => {
     expect(r.status).toBe(0)
   })
 
-  it('sleeps between looks rather than spinning', () => {
-    // Five looks 50ms apart: four sleeps at least. A spin would finish in a few milliseconds.
-    const r = run(lister(ENABLED, 0, ENABLED), BUNDLE, 5, '0.05')
+  it('sleeps the gap it was given after every look it did not open on', () => {
+    const r = run(lister(ENABLED, 0, ENABLED), BUNDLE, 5, '0.5')
     expect(r.looks).toBe(5)
-    expect(r.ms).toBeGreaterThanOrEqual(180)
+    expect(r.slept).toEqual(['0.5', '0.5', '0.5', '0.5', '0.5'])
   })
 
   it('does not open for another extension that is waiting', () => {
-    const r = run(lister(line('com.example.other', 'activated waiting for user'), 0, ''), BUNDLE, 3)
+    const other = line('com.example.other', 'activated waiting for user')
+    const r = run(lister(other, 0, other), BUNDLE, 3)
+    expect(r.looks, 'the stand-in never printed the line under test').toBe(3)
     expect(r.opened).toBeNull()
   })
 
   it('matches the bundle id literally', () => {
     // As a pattern, each `.` in the id matches any character.
-    const r = run(lister(line('devXtapflowXnetfilterXext', 'activated waiting for user'), 0, ''), BUNDLE, 3)
+    const lookalike = line('devXtapflowXnetfilterXext', 'activated waiting for user')
+    const r = run(lister(lookalike, 0, lookalike), BUNDLE, 3)
+    expect(r.looks, 'the stand-in never printed the line under test').toBe(3)
     expect(r.opened).toBeNull()
   })
 
