@@ -59,13 +59,14 @@ spctl -a -vv /Applications/TapflowNetFilter.app
 
 증명하지 **않는** 것은 이 바이너리가 저장소에 커밋된 Swift 소스에서 나왔다는 사실입니다. 앱은 메인테이너의 맥에서 빌드돼 저장소에 커밋되며, 서명 키는 CI에 두지 않습니다 — 태그를 밀 수 있는 사람이 네트워크 필터에 서명할 수 있게 되기 때문입니다. 그 대가로 빌드는 재현 불가능합니다. 소스와 바이너리의 연결까지 직접 확인하려면 소스를 읽고 직접 빌드해야 하며, 여기에는 유료 Apple 개발자 계정이 필요합니다.
 
-**끄는 것과 제거하는 것은 다릅니다.** 시스템 설정 → 일반 → 로그인 항목 및 확장 프로그램 → 네트워크 확장에서 끄면 설치된 채로 동작만 멈춥니다. 완전히 제거하려면 먼저 필터를 끕니다.
+**끄는 것과 제거하는 것은 다릅니다.** 시스템 설정 → 일반 → 로그인 항목 및 확장 프로그램 → 네트워크 확장에서 끄면 설치된 채로 동작만 멈춥니다. 완전히 제거하려면 먼저 이 맥에서 도는 tapflow(`tapflow start`, `tapflow agent start`)를 멈추세요. iOS 에이전트가 돌고 있으면 필터를 다시 켭니다. 그다음 필터를 끄고 앱을 지웁니다.
 
 ```sh
 /Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --off
+rm -rf /Applications/TapflowNetFilter.app
 ```
 
-그다음 같은 화면에서 TapflowNetFilter 옆 ⋯ 버튼으로 확장을 삭제하고 맥을 재시동합니다. 제거는 재시동할 때 끝납니다. 그 전까지 `systemextensionsctl list`에는 `terminated waiting to uninstall on reboot`로 남습니다. 필터를 먼저 끄는 이유는 켜진 필터를 지우면 맥의 새 연결이 막힐 수 있기 때문입니다.
+마지막으로 같은 화면에서 TapflowNetFilter 옆 ⋯ 버튼으로 확장을 삭제하고 맥을 재시동합니다. 앱을 지운 뒤에도 목록에 남아 있어서 삭제할 수 있습니다. 제거는 재시동할 때 끝납니다. 그 전까지 `systemextensionsctl list`에는 `terminated waiting to uninstall on reboot`로 남습니다. 필터를 먼저 끄는 이유는 켜진 필터를 지우면 맥의 새 연결이 막힐 수 있기 때문입니다.
 
 `systemextensionsctl uninstall`은 쓸 수 없습니다. 시스템 무결성 보호(SIP)가 켜진 맥에서는 macOS가 이 명령을 거부합니다.
 

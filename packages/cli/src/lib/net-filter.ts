@@ -378,12 +378,24 @@ export const APPROVAL_PATH = 'System Settings → General → Login Items & Exte
  *
  * **With the binary this package carries**, because every caller is the state where `/Applications`
  * has none. `--off` run from the package reaches the existing configuration (the first disable in
- * `installNetFilter` records that measurement).
+ * `installNetFilter` records that measurement, taken with an app still in `/Applications`; from the
+ * package with none there is the same bundle identifier and has not been measured as a pair).
+ *
+ * **`chmod +x` first**, because a registry install delivers that binary at `rw-r--r--` (see
+ * `restoreExecutableBits`) and none of the callers get as far as restoring it — `refused-host-unknown`
+ * returns before the install does. Printed rather than performed so `doctor` stays read-only.
+ *
+ * **Nothing here can say whether step 1 worked.** `--off` prints nothing and exits 0 for "nothing to
+ * disable" as well; what it did is the last line of `/tmp/tapflow-netfilter-host.log`. No sequence is
+ * known where it exits 0 over an enabled configuration, so the steps do not ask anyone to check.
  */
 export function removalSteps(): string[] {
   const shipped = shippedAppPath()
-  const off = shipped
-    ? `${shellQuote(join(shipped, 'Contents', 'MacOS', 'TapflowNetFilter'))} --off`
+  // The fallback is unreachable from today's callers — `doctor` and `installNetFilter` both answer an
+  // absent artifact before reaching here — and kept so the function never prints a hollow step.
+  const bin = shipped ? shellQuote(join(shipped, 'Contents', 'MacOS', 'TapflowNetFilter')) : null
+  const off = bin
+    ? `chmod +x ${bin} && ${bin} --off`
     : 'TapflowNetFilter --off, using the copy inside @tapflowio/ios-agent (bin/TapflowNetFilter.app/Contents/MacOS)'
   return [
     `1. Switch the filter off: ${off}`,

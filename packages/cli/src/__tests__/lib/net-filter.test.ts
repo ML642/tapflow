@@ -1429,7 +1429,10 @@ describe('net filter — how to remove it', () => {
     expect(steps.join('\n')).not.toMatch(REFUSED_UNDER_SIP)
     // **This package's binary, not `/Applications`'s**: every caller is the state where that one is
     // gone, so naming it would hand someone a command that cannot run.
-    const off = steps.findIndex((s) => s.includes(`${join(SHIPPED_APP, 'Contents', 'MacOS', 'TapflowNetFilter')} --off`))
+    const bin = join(SHIPPED_APP, 'Contents', 'MacOS', 'TapflowNetFilter')
+    // `chmod +x` in the same command: a registry install ships this binary without its executable bit,
+    // and nothing on these paths restores it, so a bare path is `permission denied`.
+    const off = steps.findIndex((s) => s.includes(`chmod +x ${bin} && ${bin} --off`))
     const remove = steps.findIndex((s) => s.includes('System Settings') && s.includes('Network Extensions'))
     const restart = steps.findIndex((s) => /Restart/.test(s))
     expect(off, 'no step switches the filter off with the shipped binary').toBeGreaterThanOrEqual(0)
