@@ -166,6 +166,26 @@ describe('tapflow migrate net-filter — asking before the install', () => {
     expect(mockFollow.mock.calls[0]?.[1]).toBe(mockOffer.mock.calls[0]?.[0])
   })
 
+  it('installs nothing when the question is backed out of, and does not fail', async () => {
+    // A no still installs; Ctrl-C or Esc at a question that warned about dropped connections must not.
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('process.exit') }) as never)
+    mockOffer.mockResolvedValue('cancelled')
+    await cmdMigrateNetFilter()
+    expect(mockInstall).not.toHaveBeenCalled()
+    expect(mockFollow).not.toHaveBeenCalled()
+    expect(exit).not.toHaveBeenCalled()
+    const printed = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n')
+    expect(printed).toMatch(/Cancelled/)
+  })
+
+  it('opens nothing when it did not ask', async () => {
+    // Non-interactive runs and replaces. `offer !== 'declined'` would start the opener for both.
+    mockOffer.mockResolvedValue('not-asked')
+    await cmdMigrateNetFilter()
+    expect(mockInstall.mock.calls[0]?.[0]?.openApprovalSheet).toBe(false)
+    expect(mockFollow.mock.calls[0]?.[3]).toBe('not-asked')
+  })
+
   it('opens nothing after a no, and tells the follow-through not to ask again', async () => {
     mockOffer.mockResolvedValue('declined')
     await cmdMigrateNetFilter()

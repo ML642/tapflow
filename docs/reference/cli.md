@@ -87,8 +87,8 @@ Runs in one pass, asking for consent before each install (interactive terminals 
 
 On macOS, `setup ios` also installs the network filter that iOS network control needs — it asks
 first, like every other install here. When the Mac has no approved extension yet, it also asks whether
-to open the approval screen when macOS asks. An approval that takes longer than two minutes still
-finishes the install: it waits for the switch. If you decline the install, or the Mac was set up before the filter shipped,
+to open the approval screen when macOS asks. Unless you decline that offer, an approval that takes
+longer than two minutes still finishes the install: it waits for the switch. If you decline the install, or the Mac was set up before the filter shipped,
 [`tapflow migrate net-filter`](#tapflow-migrate-net-filter) installs it on its own.
 
 Installing it ends with a wait of up to thirty seconds for the filter to report itself running, so
@@ -383,7 +383,8 @@ asks first whether to open the approval screen when it does. The question also s
 the filter on can drop connections this Mac already has open, SSH sessions included. Say yes and the
 screen opens as soon as `systemextensionsctl list` shows the request `waiting for user`. macOS does
 not show its own prompt again for a request already waiting, so on a rerun this is the only pointer
-there is. The device check runs after this question.
+there is. The device check runs after this question. Pressing Ctrl-C or Esc at it stops the command
+with nothing installed.
 
 **A late approval still finishes in the same run.** The install waits up to two minutes for approval
 and ends there if the entry is switched on in time. Otherwise the command waits up to two more

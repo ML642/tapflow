@@ -885,8 +885,8 @@ export interface ApprovalDeps {
   /** Only an interactive terminal is asked. Anything else keeps the `needs-approval` banner, which
    *  already says what to do. */
   interactive: boolean
-  /** A yes/no question. A cancelled prompt answers false. */
-  confirm: (message: string) => Promise<boolean>
+  /** A yes/no question. `'cancelled'` is someone backing out (Ctrl-C, Esc), which is not a no. */
+  confirm: (message: string) => Promise<boolean | 'cancelled'>
   /** One line of what is happening. */
   say: (line: string) => void
   /** Overridable so a test that means "nobody approved" does not spend two minutes proving it. */
@@ -896,8 +896,14 @@ export interface ApprovalDeps {
 /** The one outcome `followThroughApproval` starts from. */
 export type NeedsApproval = Extract<InstallOutcome, { status: 'needs-approval' }>
 
-/** What `offerApprovalUpFront` got, which decides whether `followThroughApproval` asks again. */
-export type ApprovalOffer = 'accepted' | 'declined' | 'not-asked'
+/**
+ * What `offerApprovalUpFront` got, which decides whether `followThroughApproval` asks again.
+ *
+ * `cancelled` is its own answer because the question comes before anything has changed. A no still
+ * installs; backing out of the question must not, or the person who read "connections may drop — SSH
+ * included" and pressed Ctrl-C gets exactly that.
+ */
+export type ApprovalOffer = 'accepted' | 'declined' | 'cancelled' | 'not-asked'
 
 /**
  * Ask **before** installing whether to open the approval screen when macOS asks for it.
@@ -921,7 +927,8 @@ export type ApprovalOffer = 'accepted' | 'declined' | 'not-asked'
 export async function offerApprovalUpFront(deps: ApprovalDeps): Promise<ApprovalOffer> {
   if (process.platform !== 'darwin' || !deps.interactive) return 'not-asked'
   if (!shippedAppPath() || activatedVersion() !== null) return 'not-asked'
-  return (await deps.confirm(APPROVAL_MESSAGE.upfront)) ? 'accepted' : 'declined'
+  const answer = await deps.confirm(APPROVAL_MESSAGE.upfront)
+  return answer === 'cancelled' ? 'cancelled' : answer ? 'accepted' : 'declined'
 }
 
 /**
@@ -949,7 +956,7 @@ export async function offerApprovalUpFront(deps: ApprovalDeps): Promise<Approval
 export async function followThroughApproval(
   handed: NeedsApproval, deps: ApprovalDeps, opts: InstallOptions = {}, offer: ApprovalOffer = 'not-asked',
 ): Promise<InstallOutcome> {
-  if (!deps.interactive || offer === 'declined') return handed
+  if (!deps.interactive || offer === 'declined' || offer === 'cancelled') return handed
 
   // **Read before asking, not after.** Without a version there is nothing to recognise the approval by,
   // and offering a screen the command cannot then follow through on is worse than not offering it. Not
@@ -958,7 +965,8 @@ export async function followThroughApproval(
   const shippedExt = shipped ? bundleVersion(extensionBundle(shipped)) : null
   if (!shippedExt) return handed
 
-  if (offer === 'not-asked' && !(await deps.confirm(APPROVAL_MESSAGE.prompt))) return handed
+  // Only a literal yes: a cancel here comes after the install, so it is a no rather than a way out.
+  if (offer === 'not-asked' && (await deps.confirm(APPROVAL_MESSAGE.prompt)) !== true) return handed
 
   // Said first, so the line is on screen before a window takes focus.
   deps.say(APPROVAL_MESSAGE.opening)

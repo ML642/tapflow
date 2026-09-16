@@ -61,6 +61,11 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
   // nobody is asked twice.
   const deps = terminalApprovalDeps()
   const offer = await offerApprovalUpFront(deps)
+  // Backing out of the question is backing out of the command: nothing has changed yet.
+  if (offer === 'cancelled') {
+    step('Cancelled — nothing was installed.')
+    return
+  }
   const installOpts: InstallOptions = {
     ...opts, onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]), openApprovalSheet: offer === 'accepted',
   }

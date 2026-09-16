@@ -38,11 +38,13 @@ describe('terminalApprovalDeps', () => {
     expect(terminalApprovalDeps().interactive, 'asked with nobody reading the output').toBe(false)
   })
 
-  it('reads a cancelled prompt as no', async () => {
+  it('reports a cancelled prompt as cancelled, never as a yes', async () => {
     // Ctrl-C and Esc resolve to clack's cancel symbol, and a symbol is truthy. `Boolean(answer)` or
     // `answer !== false` would open the screen and switch the filter on for someone who pressed Escape.
+    // And not as a plain no either: the question before the install has to stop on it, and a no there
+    // still installs.
     mockConfirm.mockResolvedValue(CANCEL as never)
-    expect(await terminalApprovalDeps().confirm('?')).toBe(false)
+    expect(await terminalApprovalDeps().confirm('?')).toBe('cancelled')
   })
 
   it('answers yes only to a yes, and asks the question it was given', async () => {

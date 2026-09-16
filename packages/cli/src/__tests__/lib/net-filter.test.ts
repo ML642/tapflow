@@ -10,7 +10,7 @@ vi.mock('@tapflowio/ios-agent', () => ({ isAudioSupported: vi.fn(() => false), r
 import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process'
 import { accessSync, chmodSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { confirm } from '@clack/prompts'
+import { confirm, isCancel } from '@clack/prompts'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import {
@@ -1064,7 +1064,7 @@ describe('net filter — following an approval through', () => {
    * spawned when it was said, so "before the window" and "before the switch" can be asserted rather
    * than read off the order of two separate logs.
    */
-  function person(o: { answer?: boolean; interactive?: boolean; waitMs?: number } = {}) {
+  function person(o: { answer?: boolean | 'cancelled'; interactive?: boolean; waitMs?: number } = {}) {
     const said: string[] = []
     const asked: string[] = []
     const deps: ApprovalDeps = {
@@ -1120,7 +1120,9 @@ describe('net filter — following an approval through', () => {
     // from the first guard: the same question then comes back two minutes later.
     machine({ activated: null, approvedAfterLooks: 0 })
     const { deps, asked } = person()
-    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 }, 'declined')).toEqual(HANDED)
+    for (const offer of ['declined', 'cancelled'] as const) {
+      expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 }, offer)).toEqual(HANDED)
+    }
     expect(asked).toEqual([])
     expect(openRuns()).toHaveLength(0)
     expect(switchOnRuns()).toHaveLength(0)
@@ -1149,6 +1151,21 @@ describe('net filter — following an approval through', () => {
 
     const no = person({ answer: false })
     expect(await offerApprovalUpFront(no.deps)).toBe('declined')
+
+    // Backing out is not a no: a no still installs.
+    const out = person({ answer: 'cancelled' })
+    expect(await offerApprovalUpFront(out.deps)).toBe('cancelled')
+  })
+
+  it('reads a cancel at the later question as a no, since the install has already run', async () => {
+    // The mutation is testing the answer for truthiness: the string `'cancelled'` is truthy, so the
+    // screen would open and the filter go on for someone who pressed Escape.
+    machine({ activated: null, approvedAfterLooks: 0 })
+    const { deps, asked } = person({ answer: 'cancelled' })
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(HANDED)
+    expect(asked).toEqual([APPROVAL_MESSAGE.prompt])
+    expect(openRuns()).toHaveLength(0)
+    expect(switchOnRuns()).toHaveLength(0)
   })
 
   it('does not ask up front where macOS will not ask, or where nobody can answer', async () => {
@@ -1787,6 +1804,31 @@ describe('setup and migrate share one install', () => {
       expect(prompts, 'asked twice').not.toContain(APPROVAL_MESSAGE.prompt)
       expect(openerRuns(), 'the answer never reached the install').toHaveLength(1)
       expect(result).toMatchObject({ ok: true, state: 'created' })
+    })
+  })
+
+  it('installs nothing when the approval question is backed out of', async () => {
+    // **The reason `cancelled` exists.** The question warns that connections may drop, SSH included;
+    // someone who presses Escape at it has not agreed to the install either. Every other setup prompt
+    // reads a cancel as "skip this install", and this one used to install anyway.
+    await onMacFor(async () => {
+      machine({ installed: null, activated: null })
+      mockExecSyncForIos()
+      hostExits(0)
+      setTTY(true)
+      const cancel = Symbol('clack:cancel')
+      vi.mocked(isCancel).mockImplementation((v) => v === cancel)
+      mockConfirm
+        .mockResolvedValueOnce(true as never)
+        .mockResolvedValueOnce(cancel as never)
+      vi.spyOn(console, 'log').mockImplementation(() => {})
+      const result = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      const prompts = mockConfirm.mock.calls.map((c) => (c[0] as { message?: string }).message)
+      expect(prompts, 'the cancel was never on the approval question').toContain(APPROVAL_MESSAGE.upfront)
+      expect(dittoCalls()).toHaveLength(0)
+      expect(hostCalls('--install')).toHaveLength(0)
+      expect(result).toMatchObject({ ok: true, warn: true })
+      expect(result?.detail).toMatch(/^Skipped/)
     })
   })
 
