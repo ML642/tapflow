@@ -1,6 +1,6 @@
 import { execSync, spawnSync } from 'node:child_process'
 import {
-  installNetFilter, followThroughApproval, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, isFilterEnforcing,
+  installNetFilter, followThroughApproval, offerApprovalUpFront, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, isFilterEnforcing,
   isNetFilterCurrent, readNetFilterState, removalSteps, CONFIRM_DEADLINE_MS, NET_FILTER_APP,
   type InstallOptions,
 } from './net-filter.js'
@@ -171,6 +171,15 @@ export async function runSetupIos(): Promise<SetupStepResult[]> {
  * should install unasked. macOS puts its own approval dialog after this, but that dialog arrives with
  * no warning of what asked for it.
  */
+function netFilterSkipped(): SetupStepResult {
+  return {
+    label: 'Network filter',
+    ok: true,
+    warn: true,
+    detail: 'Skipped — iOS network control stays off until `tapflow migrate net-filter` installs it.',
+  }
+}
+
 async function setUpNetFilter(): Promise<SetupStepResult> {
   // Asking about an install that would do nothing is noise, so the no-op case answers before the
   // prompt.
@@ -206,23 +215,26 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
     const proceed = await confirm({
       message: 'Install the tapflow network filter? It is a macOS system extension, needed for iOS network control, and macOS will ask you to approve it.',
     })
-    if (isCancel(proceed) || !proceed) {
-      return {
-        label: 'Network filter',
-        ok: true,
-        warn: true,
-        detail: 'Skipped — iOS network control stays off until `tapflow migrate net-filter` installs it.',
-      }
-    }
+    if (isCancel(proceed) || !proceed) return netFilterSkipped()
   }
   // Printed as the install runs, ahead of the results list this runner prints when every step is
   // done — the same place the audio step already writes from.
-  const installOpts: InstallOptions = { onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) }
+  //
+  // Reached only past the prompt above, so stdout is a terminal. The `interactive` check inside the
+  // approval step still matters here: it reads stdin as well, which that prompt's guard does not.
+  // A second question rather than a longer first one: the first is whether to install at all, this one
+  // is whether to put a window on the screen and what switching the filter on costs.
+  const deps = terminalApprovalDeps()
+  const offer = await offerApprovalUpFront(deps)
+  // The same answer as declining the install above: nothing has changed yet, and the step says how to
+  // install it later.
+  if (offer === 'cancelled') return netFilterSkipped()
+  const installOpts: InstallOptions = {
+    onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]), openApprovalSheet: offer === 'accepted',
+  }
   let outcome = installNetFilter(installOpts)
-  // Reached only past the prompt above, so stdout is a terminal. The `interactive` check inside still
-  // matters here: it reads stdin as well, which that prompt's guard does not.
   if (outcome.status === 'needs-approval') {
-    outcome = await followThroughApproval(outcome, terminalApprovalDeps(), installOpts)
+    outcome = await followThroughApproval(outcome, deps, installOpts, offer)
   }
   switch (outcome.status) {
     case 'installed':

@@ -66,7 +66,7 @@ What they do **not** prove is that this binary was built from the Swift committe
 rm -rf /Applications/TapflowNetFilter.app
 ```
 
-Last, delete the extension from the ⋯ button beside TapflowNetFilter on that same screen, and restart the Mac. It stays in that list after the app is gone, so it can still be deleted there. The removal finishes at the restart; until then `systemextensionsctl list` shows it as `terminated waiting to uninstall on reboot`. The filter goes off first because deleting one that is on can block the Mac's new connections.
+Last, click the ⋯ button beside TapflowNetFilter on that same screen, choose **Delete Extension**, and restart the Mac. It stays in that list after the app is gone, so it can still be deleted there. The removal finishes at the restart; until then `systemextensionsctl list` shows it as `terminated waiting to uninstall on reboot`. The filter goes off first because deleting one that is on can block the Mac's new connections.
 
 `systemextensionsctl uninstall` is not an option. macOS refuses it on any Mac with System Integrity Protection (SIP) on.
 

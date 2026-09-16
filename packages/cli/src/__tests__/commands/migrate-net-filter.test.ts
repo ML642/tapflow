@@ -7,13 +7,17 @@ vi.mock('../../lib/net-filter.js', async (actual) => ({
   ...(await actual<typeof import('../../lib/net-filter.js')>()),
   installNetFilter: vi.fn(),
   followThroughApproval: vi.fn(),
+  offerApprovalUpFront: vi.fn(),
 }))
 
 import { cmdMigrateNetFilter } from '../../commands/migrate.js'
-import { installNetFilter, followThroughApproval, INSTALL_STAGE_MESSAGE, removalSteps } from '../../lib/net-filter.js'
+import {
+  installNetFilter, followThroughApproval, offerApprovalUpFront, INSTALL_STAGE_MESSAGE, removalSteps,
+} from '../../lib/net-filter.js'
 
 const mockInstall = vi.mocked(installNetFilter)
 const mockFollow = vi.mocked(followThroughApproval)
+const mockOffer = vi.mocked(offerApprovalUpFront)
 
 /**
  * **What `tapflow migrate net-filter` exits with, per outcome.**
@@ -136,6 +140,57 @@ describe('tapflow migrate net-filter — saying what it is waiting on', () => {
     opts?.onProgress?.('activating')
     const written = logged.mock.calls.slice(before).map((c) => String(c[0])).join('\n')
     expect(written).toContain(INSTALL_STAGE_MESSAGE.activating)
+  })
+})
+
+describe('tapflow migrate net-filter — asking before the install', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    mockInstall.mockReturnValue({ status: 'needs-approval', filterLeftDisabled: true })
+    mockFollow.mockResolvedValue({ status: 'installed' })
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('asks before installing, and carries a yes into the install and the follow-through', async () => {
+    // **The migrate half of the wiring.** Three mutations: asking after the install (the host has
+    // already waited by then), dropping `openApprovalSheet` (no screen during the wait), and dropping the
+    // answer from the follow-through (the same question twice).
+    mockOffer.mockResolvedValue('accepted')
+    await cmdMigrateNetFilter()
+    expect(mockOffer).toHaveBeenCalledTimes(1)
+    expect(mockOffer.mock.invocationCallOrder[0]).toBeLessThan(mockInstall.mock.invocationCallOrder[0]!)
+    expect(mockInstall.mock.calls[0]?.[0]?.openApprovalSheet).toBe(true)
+    expect(mockFollow.mock.calls[0]?.[3]).toBe('accepted')
+    // One set of answers for both questions, so a person is not modelled twice.
+    expect(mockFollow.mock.calls[0]?.[1]).toBe(mockOffer.mock.calls[0]?.[0])
+  })
+
+  it('installs nothing when the question is backed out of, and does not fail', async () => {
+    // A no still installs; Ctrl-C or Esc at a question that warned about dropped connections must not.
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('process.exit') }) as never)
+    mockOffer.mockResolvedValue('cancelled')
+    await cmdMigrateNetFilter()
+    expect(mockInstall).not.toHaveBeenCalled()
+    expect(mockFollow).not.toHaveBeenCalled()
+    expect(exit).not.toHaveBeenCalled()
+    const printed = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n')
+    expect(printed).toMatch(/Cancelled/)
+  })
+
+  it('opens nothing when it did not ask', async () => {
+    // Non-interactive runs and replaces. `offer !== 'declined'` would start the opener for both.
+    mockOffer.mockResolvedValue('not-asked')
+    await cmdMigrateNetFilter()
+    expect(mockInstall.mock.calls[0]?.[0]?.openApprovalSheet).toBe(false)
+    expect(mockFollow.mock.calls[0]?.[3]).toBe('not-asked')
+  })
+
+  it('opens nothing after a no, and tells the follow-through not to ask again', async () => {
+    mockOffer.mockResolvedValue('declined')
+    await cmdMigrateNetFilter()
+    expect(mockInstall.mock.calls[0]?.[0]?.openApprovalSheet).toBe(false)
+    expect(mockFollow.mock.calls[0]?.[3]).toBe('declined')
   })
 })
 

@@ -9,9 +9,10 @@ import { step } from './print.js'
  * runs the installer stays free of anything that reads a keyboard, and its tests can hand the flow a
  * person who answers yes or no.
  *
- * **A cancelled prompt is a no.** Ctrl-C or Esc answers clack's cancel symbol, and every other prompt in
- * `setup` treats that as "skip" rather than as a reason to stop the command — the banner that follows
- * still says what to do.
+ * **A cancelled prompt is reported as such, not as a no.** Ctrl-C or Esc answers clack's cancel symbol,
+ * and in raw mode no SIGINT reaches the process, so this answer is the only trace of someone backing
+ * out. The question asked before the install has to stop on it — a no there still installs — and the
+ * one asked after reads it as a no, since the install has already run.
  */
 export function terminalApprovalDeps(): ApprovalDeps {
   return {
@@ -22,7 +23,8 @@ export function terminalApprovalDeps(): ApprovalDeps {
     interactive: process.stdout.isTTY === true && process.stdin.isTTY === true,
     confirm: async (message) => {
       const answer = await confirm({ message })
-      return !isCancel(answer) && answer === true
+      if (isCancel(answer)) return 'cancelled'
+      return answer === true
     },
     say: step,
   }

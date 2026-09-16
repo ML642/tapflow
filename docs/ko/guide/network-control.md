@@ -66,7 +66,7 @@ spctl -a -vv /Applications/TapflowNetFilter.app
 rm -rf /Applications/TapflowNetFilter.app
 ```
 
-마지막으로 같은 화면에서 TapflowNetFilter 옆 ⋯ 버튼으로 확장을 삭제하고 맥을 재시동합니다. 앱을 지운 뒤에도 목록에 남아 있어서 삭제할 수 있습니다. 제거는 재시동할 때 끝납니다. 그 전까지 `systemextensionsctl list`에는 `terminated waiting to uninstall on reboot`로 남습니다. 필터를 먼저 끄는 이유는 켜진 필터를 지우면 맥의 새 연결이 막힐 수 있기 때문입니다.
+마지막으로 같은 화면에서 TapflowNetFilter 옆 ⋯ 버튼을 눌러 **확장 프로그램 삭제**를 고르고 맥을 재시동합니다. 앱을 지운 뒤에도 목록에 남아 있어서 삭제할 수 있습니다. 제거는 재시동할 때 끝납니다. 그 전까지 `systemextensionsctl list`에는 `terminated waiting to uninstall on reboot`로 남습니다. 필터를 먼저 끄는 이유는 켜진 필터를 지우면 맥의 새 연결이 막힐 수 있기 때문입니다.
 
 `systemextensionsctl uninstall`은 쓸 수 없습니다. 시스템 무결성 보호(SIP)가 켜진 맥에서는 macOS가 이 명령을 거부합니다.
 
