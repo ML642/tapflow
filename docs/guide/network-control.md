@@ -8,9 +8,9 @@ The button works per simulator or emulator. Other devices running on the same ag
 
 ## What is cut, and what is not
 
-Taking a device offline blocks every connection it **opens from then on**. Connections that were already open are cut as well, but only inside the app tapflow launched.
+Taking a device offline blocks every connection it **opens from then on**, except over the agent Mac's own loopback. Connections that were already open are cut as well, but only inside the app tapflow launched.
 
-The network filter on the Mac judges new connections only — a connection it has already allowed cannot be taken back. So already-open sockets are cut from inside the app instead, and that reaches only the app tapflow launched. Anything running outside it keeps using the connections it already has — the simulator's browser, or another app you did not launch through tapflow.
+The network filter on the Mac judges new connections only — a connection it has already allowed cannot be taken back. So already-open sockets are cut from inside the app instead, which works only in the app tapflow launched. Anything else keeps using the connections it already has: the simulator's browser, or an app you did not launch through tapflow.
 
 In practice it looks like this: a screen that was already downloading when you pressed the button carries on for a moment, while a screen opened at that same moment fails right away. Both are normal.
 
