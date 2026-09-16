@@ -13,7 +13,10 @@ import { createServer } from 'node:net'
 import { confirm } from '@clack/prompts'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
-import { installNetFilter, readNetFilterState, extensionBundle, isFilterEnforcing, NET_FILTER_APP } from '../../lib/net-filter.js'
+import {
+  installNetFilter, readNetFilterState, extensionBundle, isFilterEnforcing, NET_FILTER_APP,
+  INSTALL_STAGE_MESSAGE, type InstallStage,
+} from '../../lib/net-filter.js'
 import { runDoctorChecks } from '../../lib/doctor.js'
 import { runSetupIos } from '../../lib/setup.js'
 
@@ -815,6 +818,110 @@ describe('net filter — installing', () => {
   })
 })
 
+describe('net filter — saying what the install is waiting on', () => {
+  onMac()
+  beforeEach(() => { vi.resetAllMocks() })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  /**
+   * **Each stage is stamped with how many spawns had run when it was reported**, and that stamp is
+   * the whole point.
+   *
+   * A list of stages on its own cannot tell a report made *before* a call from one made after it —
+   * both leave the stages in the same order, and the second names a wait the person has already sat
+   * through, which is the defect (#799). Pairing each stage with the spawn count pins the
+   * interleaving without wrapping the spawn mock, which would mean reimplementing `hostExits`'s
+   * three branches here to keep them in step.
+   */
+  function traced(code: number) {
+    hostExits(code)
+    const events: string[] = []
+    return {
+      events,
+      onProgress: (s: InstallStage) => events.push(`${s}@${mockSpawnSync.mock.calls.length}`),
+    }
+  }
+
+  /** A Mac with no filter at all, which is the path a first install takes. */
+  function freshMac() {
+    machine({ installed: null, activated: null })
+    bundleOnDisk()
+  }
+
+  it('reports every stage before the call it describes, not after', () => {
+    // The mutation: move any `onProgress` call below its `spawnSync`. The stage list alone would
+    // still be in order; this ordering is what fails.
+    freshMac()
+    const { events, onProgress } = traced(0)
+    installNetFilter({ confirmDeadlineMs: 0, onProgress })
+    // Both sequences, because either alone can be right while they interleave wrongly.
+    expect(spawnOrder()).toEqual(['--off', 'ditto', '--off', '--install'])
+    expect(events).toEqual([
+      'checking@0',    // before `readNetFilterState`, which spawns nothing but is not free
+      'disabling@0',   // before the pre-copy `--off`
+      'copying@1',     // after that `--off`, before `ditto`
+      'activating@2',  // after `ditto`, before the gate `--off` and `--install`
+      'confirming@4',  // after both, before `waitForEnforcing`
+    ])
+  })
+
+  it('says nothing extra, and nothing different, when no callback is given', () => {
+    // Optional by design — two commands and ~50 call sites in this file predate it. The outcome must
+    // not depend on whether anyone is listening.
+    freshMac()
+    hostExits(0)
+    const withoutCb = installNetFilter({ confirmDeadlineMs: 0 })
+    vi.resetAllMocks()
+    freshMac()
+    hostExits(0)
+    const withCb = installNetFilter({ confirmDeadlineMs: 0, onProgress: () => {} })
+    expect(withCb).toEqual(withoutCb)
+    expect(withCb).toEqual({ status: 'installed-unconfirmed' })
+  })
+
+  it('does not say it is confirming on a path that never waits', () => {
+    // Exit 4 dies before `configureFilter`, so there is no provider to come back and nothing to
+    // watch for. The mutation: hoist `onProgress('confirming')` out of the `case 0` block.
+    freshMac()
+    // `4` as a literal, the way the exit-code cases above name theirs — the constant is private to
+    // `net-filter.ts`, and exporting it to spell it here would widen that module's surface for a test.
+    const { events, onProgress } = traced(4)
+    expect(installNetFilter({ onProgress })).toEqual({ status: 'needs-approval', filterLeftDisabled: true })
+    expect(events.some((e) => e.startsWith('confirming@'))).toBe(false)
+    expect(events.some((e) => e.startsWith('activating@'))).toBe(true)
+  })
+
+  it('reports the check before the refusals, so a Mac that declines still says why it paused', () => {
+    // `readNetFilterState` is `systemextensionsctl` plus three `defaults`, each bounded at 10s. A
+    // refusal decided from that reading is the one case where the whole visible runtime is the
+    // probe. The mutation: move `onProgress('checking')` below the guards.
+    machine({ installed: NEWER, activated: NEWER })
+    const { events, onProgress } = traced(0)
+    expect(installNetFilter({ onProgress })).toMatchObject({ status: 'refused-downgrade' })
+    // `@0` — the refusal is decided from the probe alone, so nothing was spawned before it.
+    expect(events).toEqual(['checking@0'])
+    expect(spawnOrder()).toEqual([])
+  })
+
+  it('front-loads the approval warning, because nothing later can say it', () => {
+    // The host logs "needs user approval" to its own file and exits 4 only once its 120s deadline
+    // has passed; a blocking `spawnSync` cannot read that in between. So this sentence is the only
+    // warning the person gets. The mutation: drop it from the message.
+    expect(INSTALL_STAGE_MESSAGE.activating).toMatch(/approve/i)
+    expect(INSTALL_STAGE_MESSAGE.activating).toMatch(/System Settings/)
+  })
+
+  it('carries a non-empty message for every stage and no stage it does not have', () => {
+    // `Record<InstallStage, string>` already makes a *missing* key a type error. What it does not
+    // catch is an empty string or a leftover key, and both print nothing useful to somebody waiting.
+    // Same shape as `knownFlags` against `parseMode` in the filter's own Swift: two things that have
+    // to agree, where only a test can say so.
+    const stages: InstallStage[] = ['checking', 'disabling', 'copying', 'activating', 'confirming']
+    for (const s of stages) expect(INSTALL_STAGE_MESSAGE[s].trim(), s).not.toEqual('')
+    expect(Object.keys(INSTALL_STAGE_MESSAGE).sort()).toEqual([...stages].sort())
+  })
+})
+
 describe('doctor — what it says about the filter', () => {
   onMac()
   beforeEach(() => { vi.resetAllMocks() })
@@ -1036,6 +1143,25 @@ describe('setup and migrate share one install', () => {
       expect(filterPrompts().length, 'it installed without asking').toBe(1)
       expect(step).toMatchObject({ ok: true, state: 'created' })
       expect(dittoCalls().length).toBe(1)
+    })
+  })
+
+  it('prints the install steps while it installs, not after the run is over', async () => {
+    // **The other half of the wiring**, and the reason it is asserted on stdout rather than on the
+    // returned step: `runSetupIos` gathers its results and the command prints them once every step
+    // has finished, so progress that were merely *returned* would appear after the wait it
+    // describes. The mutation is deleting `onProgress` from `setUpNetFilter`'s call.
+    await onMacFor(async () => {
+      machine({ installed: null, activated: null })
+      mockExecSyncForIos()
+      hostExits(0)
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      const logged = vi.spyOn(console, 'log').mockImplementation(() => {})
+      await runSetupIos()
+      const written = logged.mock.calls.map((c) => String(c[0])).join('\n')
+      expect(written).toContain(INSTALL_STAGE_MESSAGE.checking)
+      expect(written).toContain(INSTALL_STAGE_MESSAGE.activating)
     })
   })
 

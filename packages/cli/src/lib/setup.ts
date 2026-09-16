@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process'
-import { installNetFilter, isFilterEnforcing, isNetFilterCurrent, readNetFilterState, CONFIRM_DEADLINE_MS, NET_FILTER_APP } from './net-filter.js'
+import { installNetFilter, INSTALL_STAGE_MESSAGE, isFilterEnforcing, isNetFilterCurrent, readNetFilterState, CONFIRM_DEADLINE_MS, NET_FILTER_APP } from './net-filter.js'
 import { existsSync, readFileSync, appendFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -199,7 +199,9 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
       }
     }
   }
-  const outcome = installNetFilter()
+  // Printed as the install runs, ahead of the results list this runner prints when every step is
+  // done — the same place the audio step already writes from.
+  const outcome = installNetFilter({ onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) })
   switch (outcome.status) {
     case 'installed':
       return { label: 'Network filter', ok: true, state: 'created' }

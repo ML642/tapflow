@@ -9,7 +9,7 @@ vi.mock('../../lib/net-filter.js', async (actual) => ({
 }))
 
 import { cmdMigrateNetFilter } from '../../commands/migrate.js'
-import { installNetFilter } from '../../lib/net-filter.js'
+import { installNetFilter, INSTALL_STAGE_MESSAGE } from '../../lib/net-filter.js'
 
 const mockInstall = vi.mocked(installNetFilter)
 
@@ -96,5 +96,33 @@ describe('tapflow migrate net-filter — exit code contract', () => {
 
     expect(handled.length, 'no cases were found — the regex stopped matching the source').toBeGreaterThan(5)
     expect(handled.sort()).toEqual(Object.keys(EXIT_CONTRACT).sort())
+  })
+})
+
+describe('tapflow migrate net-filter — saying what it is waiting on', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('hands the installer a reporter that prints, instead of installing in silence', () => {
+    // **The wiring, which the installer's own tests cannot see.** Every progress test in
+    // `net-filter.test.ts` calls `installNetFilter` directly, so deleting `onProgress` from *this*
+    // call site leaves all of them green. That deletion is the mutation this test exists for.
+    mockInstall.mockReturnValue({ status: 'already-current' } as never)
+    cmdMigrateNetFilter()
+
+    const opts = mockInstall.mock.calls[0]?.[0] as { onProgress?: (s: string) => void } | undefined
+    expect(opts?.onProgress, 'the command installs without reporting anything').toBeTypeOf('function')
+
+    // **And that the reporter writes.** A callback that accepts a stage and drops it would satisfy
+    // the check above while leaving the command exactly as silent as it was — which is the defect,
+    // not a weaker version of it.
+    const logged = vi.mocked(console.log)
+    const before = logged.mock.calls.length
+    opts?.onProgress?.('activating')
+    const written = logged.mock.calls.slice(before).map((c) => String(c[0])).join('\n')
+    expect(written).toContain(INSTALL_STAGE_MESSAGE.activating)
   })
 })
