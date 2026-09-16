@@ -1111,7 +1111,13 @@ describe('net filter — following an approval through', () => {
   it('gives up when nobody switches it on within the wait, and sleeps between looks', async () => {
     // Bounded, and not a busy loop. A 1.5 s wait at a one-second pace is three readings — at 0, 1 and
     // 2 s. Deleting the sleep turns that into millions; deleting the deadline never returns.
-    machine({ activated: null, approvedAfterLooks: 1_000 })
+    //
+    // **The approval is unreachable, not merely late.** This was 1 000 looks, and deleting the sleep
+    // reached that in a few milliseconds — so the fixture approved, the flow switched on, and the test
+    // failed on its outcome while the look count below was never evaluated. The mutation was caught for
+    // a reason this test does not name. With no approval to reach, the spin has to be caught by the
+    // assertion that says it spun.
+    machine({ activated: null, approvedAfterLooks: Number.POSITIVE_INFINITY })
     const { deps } = person({ waitMs: 1_500 })
     const began = Date.now()
     expect(await followThroughApproval(deps, { confirmDeadlineMs: 0 })).toEqual(STILL_WAITING)
