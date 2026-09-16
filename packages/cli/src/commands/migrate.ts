@@ -1,6 +1,10 @@
 import { banner, step } from '../lib/print.js'
 import { migrateDataDir } from '../lib/migrate-data-dir.js'
-import { installNetFilter, INSTALL_STAGE_MESSAGE, CONFIRM_DEADLINE_MS, NET_FILTER_APP } from '../lib/net-filter.js'
+import {
+  installNetFilter, followThroughApproval, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, CONFIRM_DEADLINE_MS,
+  NET_FILTER_APP, type InstallOptions,
+} from '../lib/net-filter.js'
+import { terminalApprovalDeps } from '../lib/approval-prompt.js'
 
 // `tapflow migrate data-dir` — one-shot move of a legacy .tapflow-data/ into the unified .tapflow/data/.
 export function cmdMigrateDataDir(): void {
@@ -49,10 +53,17 @@ export function cmdMigrateDataDir(): void {
  * The install itself is `installNetFilter`, shared with setup — one routine, because two would
  * eventually answer the same question differently.
  */
-export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): void {
+export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): Promise<void> {
   // **Lines rather than a spinner**, and that is forced rather than chosen: `installNetFilter` is
   // synchronous to the bottom, so `setInterval` never fires while it runs. See `InstallStage`.
-  const outcome = installNetFilter({ ...opts, onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) })
+  const installOpts: InstallOptions = { ...opts, onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) }
+  let outcome = installNetFilter(installOpts)
+  // **Finished in the same run when somebody is here to do it (#799).** Async for the prompt alone. What
+  // comes back is decided by the switch below exactly as a first answer would be, so the exit code of
+  // every outcome is unchanged.
+  if (outcome.status === 'needs-approval') {
+    outcome = await followThroughApproval(terminalApprovalDeps(), installOpts)
+  }
   switch (outcome.status) {
     case 'installed':
       banner('success', 'NETWORK FILTER INSTALLED', [
@@ -88,10 +99,13 @@ export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {
     case 'needs-approval':
       banner('success', 'APPROVAL NEEDED', [
         `Installed to ${NET_FILTER_APP}, and macOS is waiting for you to allow it.`,
-        'System Settings → General → Login Items & Extensions → Network Extensions, and switch tapflow on.',
-        'Then check it took: tapflow doctor ios',
+        `${APPROVAL_PATH}, and switch tapflow on.`,
+        // **Run again, not check.** Every way here — no terminal, the offer declined, or no switch
+        // within the wait — leaves the filter off, and the rerun is what turns it on. Pointing at
+        // `doctor` first only sent people to a line telling them to run this.
+        'Then run this again to switch the filter on: tapflow migrate net-filter',
         ...(outcome.filterLeftDisabled ? [
-          'The filter is switched off until you do — your network is unaffected, and iOS network'
+          'The filter stays switched off until then — your network is unaffected, and iOS network'
           + ' control stays unavailable.',
         ] : []),
       ])

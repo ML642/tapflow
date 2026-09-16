@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url'
 vi.mock('../../lib/net-filter.js', async (actual) => ({
   ...(await actual<typeof import('../../lib/net-filter.js')>()),
   installNetFilter: vi.fn(),
+  followThroughApproval: vi.fn(),
 }))
 
 import { cmdMigrateNetFilter } from '../../commands/migrate.js'
-import { installNetFilter, INSTALL_STAGE_MESSAGE } from '../../lib/net-filter.js'
+import { installNetFilter, followThroughApproval, INSTALL_STAGE_MESSAGE } from '../../lib/net-filter.js'
 
 const mockInstall = vi.mocked(installNetFilter)
+const mockFollow = vi.mocked(followThroughApproval)
 
 /**
  * **What `tapflow migrate net-filter` exits with, per outcome.**
@@ -66,20 +68,23 @@ describe('tapflow migrate net-filter — exit code contract', () => {
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit')
     }) as never)
+    // A stalled install is handed to the approval step. Here nobody approves, so the contract measured is
+    // the first answer's — which is what a provisioning script without a terminal sees.
+    mockFollow.mockResolvedValue({ status: 'needs-approval', filterLeftDisabled: true })
   })
   afterEach(() => { vi.restoreAllMocks() })
 
-  it.each(Object.entries(EXIT_CONTRACT))('%s exits %d', (status, code) => {
+  it.each(Object.entries(EXIT_CONTRACT))('%s exits %d', async (status, code) => {
     mockInstall.mockReturnValue({ status, ...OUTCOME[status] } as never)
 
     if (code === 0) {
-      cmdMigrateNetFilter()
+      await cmdMigrateNetFilter()
       expect(exitSpy, `${status} left the process with a failure code`).not.toHaveBeenCalled()
     } else {
-      // **The throw is the assertion that it stopped.** `process.exit` is mocked, so without it the
+      // **The rejection is the assertion that it stopped.** `process.exit` is mocked, so without it the
       // switch would fall through and the next statement would run in a process the real command has
       // already left — which is how a `break` that should have been a `return` reads as passing.
-      expect(() => { cmdMigrateNetFilter() }).toThrow('process.exit')
+      await expect(cmdMigrateNetFilter()).rejects.toThrow('process.exit')
       expect(exitSpy).toHaveBeenCalledWith(1)
     }
   })
@@ -91,7 +96,7 @@ describe('tapflow migrate net-filter — exit code contract', () => {
     const src = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'commands', 'migrate.ts'), 'utf8',
     )
-    const body = src.slice(src.indexOf('export function cmdMigrateNetFilter'))
+    const body = src.slice(src.indexOf('export async function cmdMigrateNetFilter'))
     const handled = [...body.matchAll(/^ {4}case '([a-z-]+)':/gm)].map((m) => m[1])
 
     expect(handled.length, 'no cases were found — the regex stopped matching the source').toBeGreaterThan(5)
@@ -106,12 +111,12 @@ describe('tapflow migrate net-filter — saying what it is waiting on', () => {
   })
   afterEach(() => { vi.restoreAllMocks() })
 
-  it('hands the installer a reporter that prints, instead of installing in silence', () => {
+  it('hands the installer a reporter that prints, instead of installing in silence', async () => {
     // **The wiring, which the installer's own tests cannot see.** Every progress test in
     // `net-filter.test.ts` calls `installNetFilter` directly, so deleting `onProgress` from *this*
     // call site leaves all of them green. That deletion is the mutation this test exists for.
     mockInstall.mockReturnValue({ status: 'already-current' } as never)
-    cmdMigrateNetFilter({ ignoreRunningDevices: true })
+    await cmdMigrateNetFilter({ ignoreRunningDevices: true })
 
     const opts = mockInstall.mock.calls[0]?.[0] as
       { onProgress?: (s: string) => void; ignoreRunningDevices?: boolean } | undefined
@@ -131,5 +136,36 @@ describe('tapflow migrate net-filter — saying what it is waiting on', () => {
     opts?.onProgress?.('activating')
     const written = logged.mock.calls.slice(before).map((c) => String(c[0])).join('\n')
     expect(written).toContain(INSTALL_STAGE_MESSAGE.activating)
+  })
+})
+
+describe('tapflow migrate net-filter — following an approval through', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('process.exit') }) as never)
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('hands a stalled install to the approval step, and reports what that step ended with', async () => {
+    // **The migrate half of the wiring.** Deleting the call leaves the command printing APPROVAL NEEDED
+    // over a Mac the person just approved. The options go through whole, so `--ignore-running-devices`
+    // still governs the switch-on and the switch-on still reports its progress.
+    mockInstall.mockReturnValue({ status: 'needs-approval', filterLeftDisabled: true })
+    mockFollow.mockResolvedValue({ status: 'installed' })
+    await cmdMigrateNetFilter({ ignoreRunningDevices: true })
+
+    expect(mockFollow).toHaveBeenCalledTimes(1)
+    const opts = mockFollow.mock.calls[0]?.[1]
+    expect(opts?.ignoreRunningDevices).toBe(true)
+    expect(opts?.onProgress).toBeTypeOf('function')
+    const written = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n')
+    expect(written, 'the banner reported the first answer rather than the final one').toContain('NETWORK FILTER INSTALLED')
+  })
+
+  it('does not offer the approval screen when nothing is waiting for approval', async () => {
+    mockInstall.mockReturnValue({ status: 'installed' })
+    await cmdMigrateNetFilter()
+    expect(mockFollow).not.toHaveBeenCalled()
   })
 })

@@ -355,6 +355,14 @@ function relayIsServing(): boolean {
 export type InstallStage = 'checking' | 'disabling' | 'copying' | 'activating' | 'confirming'
 
 /**
+ * Where the approval lives, in words.
+ *
+ * Kept as one string because it is the fallback for `APPROVAL_SHEET_URL`: `open` answers 0 whether or
+ * not the sheet appeared, so every message that offers the sheet also has to say where it is.
+ */
+export const APPROVAL_PATH = 'System Settings → General → Login Items & Extensions → Network Extensions'
+
+/**
  * What each stage says.
  *
  * **One map rather than a sentence in each command**, for the reason `isNetFilterCurrent` is
@@ -369,8 +377,7 @@ export const INSTALL_STAGE_MESSAGE: Record<InstallStage, string> = {
   copying: `Copying the filter to ${NET_FILTER_APP}…`,
   activating:
     'Activating the system extension. macOS may ask you to approve it, and this waits up to two'
-    + ' minutes for that — approve it in System Settings → General → Login Items & Extensions →'
-    + ' Network Extensions.',
+    + ` minutes for that — approve it in ${APPROVAL_PATH}.`,
   confirming: 'Waiting for the filter to report itself running…',
 }
 
@@ -716,9 +723,9 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
  * Mac, which is not nothing on a path whose neighbours run a binary that once erased a rule when
  * handed a flag it did not know.
  *
- * `Atomics.wait` on a throwaway buffer, not a busy loop: this module is synchronous all the way up to
- * two commands that are synchronous themselves, and making it async to sleep would mean making
- * `installNetFilter`, `setUpNetFilter` and `cmdMigrateNetFilter` async for a pause.
+ * `Atomics.wait` on a throwaway buffer, not a busy loop: `installNetFilter` is synchronous, and making
+ * it async to sleep would change its signature and every one of its call sites for a pause. Both
+ * commands are async — for a prompt — and that does not reach in here.
  */
 function waitForEnforcing(deadlineMs: number, since: number): boolean {
   const until = Date.now() + deadlineMs
@@ -727,6 +734,177 @@ function waitForEnforcing(deadlineMs: number, since: number): boolean {
     if (Date.now() >= until) return false
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, CONFIRM_POLL_MS)
   }
+}
+
+/**
+ * The approval sheet: Login Items & Extensions with the Network Extensions sheet already presented and
+ * tapflow's toggle in it.
+ *
+ * **Measured, and the obvious candidates are wrong.** On macOS 27.0 three URLs that look right land on
+ * the wrong screen. `contributing/macos-settings-deep-link-diagnosis.md` has them, and has why the
+ * result of opening this cannot be checked.
+ */
+export const APPROVAL_SHEET_URL =
+  'x-apple.systempreferences:com.apple.ExtensionsPreferences'
+  + '?extensionPointIdentifier=com.apple.system_extension.network_extension.extension-point'
+
+/**
+ * How long to wait, once the sheet is offered, for someone to switch tapflow on.
+ *
+ * The host's own approval deadline, reused on purpose: the person has already had that long once
+ * without knowing where to go, and is now being shown. Longer keeps a terminal hanging over a window
+ * that was dismissed; shorter gives up on someone typing an administrator password.
+ */
+export const APPROVAL_WAIT_MS = 120_000
+
+/** How often to ask whether it happened. `systemextensionsctl list` answers locally in tens of
+ *  milliseconds, so a second between looks is a person's pace rather than the machine's. */
+const APPROVAL_POLL_MS = 1_000
+
+/** How long the switch-on run gets. It is one `NEFilterManager` save, like `--off`; this bounds a
+ *  wedged run rather than budgeting a slow one. */
+const SWITCH_ON_TIMEOUT_MS = 15_000
+
+/**
+ * What the approval step says. One map, for the same reason as `INSTALL_STAGE_MESSAGE`.
+ *
+ * **`opening` never says the sheet is open**, because nothing can know that — see
+ * `APPROVAL_SHEET_URL`. It says where it is going and keeps the path for when it does not arrive.
+ */
+export const APPROVAL_MESSAGE = {
+  prompt: 'macOS is waiting for you to allow tapflow\'s network extension. Open the screen where you switch it on?',
+  opening: `Opening ${APPROVAL_PATH} — switch TapflowNetFilter on there. If nothing appears, go there by that path.`,
+  waiting: `Waiting up to ${APPROVAL_WAIT_MS / 60_000} minutes for it to be switched on…`,
+  switching: 'Allowed. Switching the filter on — connections this Mac already has open may drop for a'
+    + ' moment, SSH sessions included.',
+} as const
+
+/**
+ * What the approval step needs from whoever runs it.
+ *
+ * Parameters rather than imports, so this module stays free of anything that reads a keyboard and the
+ * flow can be handed a person who answers yes or no. The terminal's version is
+ * `terminalApprovalDeps` in `approval-prompt.ts`.
+ */
+export interface ApprovalDeps {
+  /** Only an interactive terminal is asked. Anything else keeps the `needs-approval` banner, which
+   *  already says what to do. */
+  interactive: boolean
+  /** A yes/no question. A cancelled prompt answers false. */
+  confirm: (message: string) => Promise<boolean>
+  /** One line of what is happening. */
+  say: (line: string) => void
+  /** Overridable so a test that means "nobody approved" does not spend two minutes proving it. */
+  approvalWaitMs?: number
+}
+
+/**
+ * Take an install that stopped at approval the rest of the way, in the same run (#799).
+ *
+ * `installNetFilter` answers `needs-approval` once the host has given up waiting for macOS. The
+ * activation request stays pending after the host exits — #799 records someone approving after the
+ * command had finished and the extension activating — which is why finishing later is possible at
+ * all. Until now the command then said where to go and exited with the filter still switched off, so
+ * even a prompt approval needed a second run to take effect. This offers the sheet, waits for the
+ * switch, and turns the filter on.
+ *
+ * **Every way out that is not an approval returns the outcome it was handed.** Not interactive,
+ * declined, or nobody switched it on in time: the caller's `needs-approval` banner is still the right
+ * thing to print, and it says to run the command again.
+ */
+export async function followThroughApproval(deps: ApprovalDeps, opts: InstallOptions = {}): Promise<InstallOutcome> {
+  const stillWaiting: InstallOutcome = { status: 'needs-approval', filterLeftDisabled: true }
+  if (!deps.interactive) return stillWaiting
+  if (!(await deps.confirm(APPROVAL_MESSAGE.prompt))) return stillWaiting
+
+  // Said first, so the line is on screen before a window takes focus.
+  deps.say(APPROVAL_MESSAGE.opening)
+  openApprovalSheet()
+
+  const shipped = shippedAppPath()
+  const shippedExt = shipped ? bundleVersion(extensionBundle(shipped)) : null
+  // Unreachable after an install that got this far — `installNetFilter` answers `no-artifact` first —
+  // but with no version there is nothing to recognise the approval by, and guessing is worse.
+  if (!shippedExt) return stillWaiting
+
+  deps.say(APPROVAL_MESSAGE.waiting)
+  if (!waitForApproval(shippedExt, deps.approvalWaitMs ?? APPROVAL_WAIT_MS)) return stillWaiting
+
+  // **Asked again, because time has passed.** The install's own check ran before a prompt that waits for
+  // as long as nobody answers, and before a two-minute wait. Switching the filter on drops connections
+  // — #799 records an SSH session closed by exactly this — so a simulator somebody started meanwhile is
+  // refused here for the same reason a replace is.
+  const busy = opts.ignoreRunningDevices ? [] : busyDevices()
+  if (busy.length > 0) return { status: 'refused-devices-busy', busy }
+
+  deps.say(APPROVAL_MESSAGE.switching)
+  return switchFilterOn(opts)
+}
+
+/**
+ * Open the approval sheet, and return nothing, because nothing can be known.
+ *
+ * `open` answers 0 and launches System Settings for a pane id that does not exist, so its status says
+ * nothing about whether the sheet appeared. A `spawnSync` by this module's convention, since it changes
+ * what is on the screen.
+ */
+function openApprovalSheet(): void {
+  spawnSync('/usr/bin/open', [APPROVAL_SHEET_URL], { stdio: 'ignore', timeout: PROBE_TIMEOUT_MS })
+}
+
+/**
+ * Wait for macOS to report **this build's** extension activated.
+ *
+ * **Against the shipped version, not against "anything activated".** `installNetFilter` does not refuse
+ * an older activated extension, so a Mac can arrive here with a previous version still
+ * `[activated enabled]` — and a check for non-null would read that as approval given before anyone
+ * touched the switch.
+ *
+ * Synchronous, like `waitForEnforcing`, and for the same reason.
+ */
+function waitForApproval(shippedExt: string, deadlineMs: number): boolean {
+  const until = Date.now() + deadlineMs
+  for (;;) {
+    if (activatedVersion() === shippedExt) return true
+    if (Date.now() >= until) return false
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, APPROVAL_POLL_MS)
+  }
+}
+
+/**
+ * Switch the filter on without activating anything: the host's plain configure mode.
+ *
+ * **Not `--install` again.** The extension has just been approved, and activating it once more brings in
+ * the replace machinery — the conflict question, a possible reboot answer — for what is one preference
+ * save. With no flags the host writes an empty rule with `isEnabled = true` and exits 0
+ * (`Host/main.swift`, `case .configure`).
+ *
+ * **The rule is emptied, and that is what `--install` would have done** — it takes `clearAll` too. A
+ * device can only be offline here if `--ignore-running-devices` was passed, since the busy check refuses
+ * otherwise, and that flag already accepts interrupting it.
+ */
+function switchFilterOn(opts: InstallOptions): InstallOutcome {
+  // Snapshotted for the same reason as the gate `--off`: the exit-4 run that led here left its own last
+  // line in the shared log, and a failure below must not be explained by it.
+  const logBefore = hostLogTail()
+  const run = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), [], {
+    encoding: 'utf8', timeout: SWITCH_ON_TIMEOUT_MS,
+  })
+  if (!run || run.status !== 0) {
+    return {
+      status: 'failed',
+      code: run?.status ?? -1,
+      detail: (hostLogTail() === logBefore ? '' : hostLogTail()) || (run?.stderr || '').trim()
+        || 'could not switch the filter on',
+      // Still off: the exit-4 run died before writing the configuration, and this one did not write it.
+      filterLeftDisabled: true,
+    }
+  }
+  // A save accepted is not a provider enforcing — the same look `installNetFilter` takes on exit 0.
+  reportProgress(opts, 'confirming')
+  return waitForEnforcing(opts.confirmDeadlineMs ?? CONFIRM_DEADLINE_MS, Math.floor(Date.now() / 1000))
+    ? { status: 'installed' }
+    : { status: 'installed-unconfirmed' }
 }
 
 /** The host binary logs its own exit reason; a bare code says which preference failed but not what the
