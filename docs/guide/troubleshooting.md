@@ -263,7 +263,7 @@ It reports four things separately: whether it is **installed**, whether it is **
 **If the app is gone but the extension is still running, tapflow refuses to reinstall.** The extension's version says which filter is running, not which app it came from, so nothing can tell whether that Mac was set up by a newer tapflow than yours — and installing over it would replace a working filter someone else may depend on. Reinstall from the tapflow whose version matches, or clear the extension and start again. `tapflow doctor ios` and the command that refused both print the steps:
 
 1. Switch the filter off. The app is gone, so this uses the binary inside the package, and the command prints its exact path.
-2. Delete the extension from the ⋯ button beside TapflowNetFilter in System Settings → General → Login Items & Extensions → Network Extensions. This works with the app already gone from `/Applications`.
+2. Click the ⋯ button beside TapflowNetFilter and choose **Delete Extension**, in System Settings → General → Login Items & Extensions → Network Extensions. This works with the app already gone from `/Applications`.
 3. Restart the Mac. The removal finishes then.
 
 `systemextensionsctl uninstall` is not an option: macOS refuses it on any Mac with System Integrity Protection (SIP) on.

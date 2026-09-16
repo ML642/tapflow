@@ -371,7 +371,8 @@ export const APPROVAL_PATH = 'System Settings → General → Login Items & Exte
  *
  * **Not `systemextensionsctl uninstall`, which is what this used to say.** It refuses on any Mac with
  * System Integrity Protection on — measured on macOS 27, 2026-09-17 — so the advice worked only on a
- * Mac nobody runs this on. System Settings removes it instead, including when the app is already gone
+ * Mac nobody runs this on. System Settings removes it instead (the ⋯ menu's item reads "확장 프로그램
+ * 삭제" on a Korean Mac, measured; "Delete Extension" is the English label as published), including when the app is already gone
  * from `/Applications` (same measurement), and the removal finishes at the next restart: the list
  * reads `terminated waiting to uninstall on reboot` until then.
  *
@@ -409,7 +410,7 @@ export function removalSteps(): string[] {
     : 'TapflowNetFilter --off, using the copy inside @tapflowio/ios-agent (bin/TapflowNetFilter.app/Contents/MacOS)'
   return [
     `1. Switch the filter off: ${off}`,
-    `2. Remove TapflowNetFilter in ${APPROVAL_PATH}, from the ⋯ button beside it`,
+    `2. In ${APPROVAL_PATH}, click ⋯ beside TapflowNetFilter and choose Delete Extension`,
     '3. Restart the Mac. The removal finishes then',
   ]
 }
@@ -969,6 +970,11 @@ export async function followThroughApproval(
   if (offer === 'not-asked' && (await deps.confirm(APPROVAL_MESSAGE.prompt)) !== true) return handed
 
   // Said first, so the line is on screen before a window takes focus.
+  //
+  // **Opened again after a yes up front, on purpose.** By now the opener showed the sheet about two
+  // minutes ago and the person may be mid-way through the administrator password. Measured on macOS 27
+  // (2026-09-17): the password prompt stays open through this `open` and through the rest of the wait,
+  // so the reopen costs nothing there, and it restores a window someone closed.
   deps.say(APPROVAL_MESSAGE.opening)
   openApprovalSheet()
 
