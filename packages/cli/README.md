@@ -158,7 +158,7 @@ What's included:
 - **Touch, swipe & pinch** — real-time input forwarded to the simulator or emulator.
 - **Deeplink toolbar** — open supported deeplinks directly from the QA toolbar.
 - **Keyboard shortcuts** — trigger simulator toolbar actions from the keyboard.
-- **Clipboard sync** — copy and paste between your Mac and the device, in both directions.
+- **Clipboard sync** — copy and paste between your Mac and the device, in both directions. Copying *from* the device needs the dashboard on HTTPS or localhost; over plain HTTP the text lands on the device's own clipboard and the dashboard says so.
 - **Device audio** — the app's sound comes back to the browser tab.
 - **Network control** — take a device off the network and put it back, to test how the app behaves offline. iOS installs a network filter once; Android needs nothing.
 - **App Center** — upload `.app.zip` / `.apk` and track builds by status (Backlog / In Progress / Done / Rejected).
