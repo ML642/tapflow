@@ -28,7 +28,7 @@ import { Label } from '@/components/ui/label';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { SearchInput } from '@/components/ui/search-input';
 import type { DeviceSummary, SessionInfo } from '@/lib/types';
-import { getResourceHealth, type ResourceHealth } from '@/lib/resource-health';
+import { getResourceHealth, RESOURCE_STALE_MS, type ResourceHealth } from '@/lib/resource-health';
 
 /** Why this viewer stopped — a superset of the relay's termination reasons; see `DeviceViewer`'s prop. */
 type ViewerStoppedReason = SessionTerminatedReason | 'busy-elsewhere' | 'mac-overloaded';
@@ -319,7 +319,7 @@ export function QASession() {
                 <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-2">
                   {agentGroups.map((s: SessionInfo) => {
                     const res = s.resources
-                    const isStale = res ? Date.now() - res.reportedAt > 30_000 : false // eslint-disable-line react-hooks/purity
+                    const isStale = res ? Date.now() - res.reportedAt > RESOURCE_STALE_MS : false // eslint-disable-line react-hooks/purity
                     const deviceCount = s.devices.filter((d) => d.platform === os).length
                     const cpuPercent = res?.cpuPercent ?? 0
                     const memPercent = res ? (res.memUsedMB / res.memTotalMB) * 100 : 0

@@ -1,5 +1,70 @@
 # @tapflowio/relay
 
+## 0.22.0
+
+### Patch Changes
+
+- e2123d5: **The Mac Resources charts follow the clock now** ([#751](https://github.com/jo-duchan/tapflow/issues/751)). They were fetched once, when the page opened, and the window ended at that moment for as long as the page stayed open — so a monitoring screen showed nothing newer than when you arrived, and the space between the last time label and the right edge read as an axis skewed to one side. The window's edge now advances at a pace set by the range, labels enter on the right and fade out on the left, and the history is re-fetched on a cadence that matches what the relay stores: every minute on 1h and 6h, every five minutes on 24h, every fifteen on 7d. The charts stop advancing and refreshing while the tab is hidden, a history younger than its interval is not re-fetched on return, and a refresh that fails keeps the chart as it was instead of emptying it.
+
+  **The line reaches the present.** The relay stores one averaged sample a minute, so the newest stored point is up to a minute old. The Mac's latest report, sent every five seconds and already part of the dashboard's Mac list, ends each line in a dot, and is never stored. Hovering the dot, or pressing End on the chart, reads its value at the current time. It is dropped within ten seconds of turning 30 seconds old, the same bound within which the QA Session cards call a Mac stale.
+
+  **Time labels sit on local round times** ([#749](https://github.com/jo-duchan/tapflow/issues/749)). They were aligned in UTC, which is only round where the offset is a whole number of hours: in a 45-minute zone the 1h axis read 07:45, 07:55, and west of Greenwich a 7d label named the day before the midnight it marked. Across a daylight-saving change one gap is now 23 or 25 hours wide, because that day is 23 or 25 hours long.
+
+- a12ff53: **The invite link the dashboard copies is the one the invitation email carries** ([#788](https://github.com/jo-duchan/tapflow/issues/788)). The email was built from the relay's configured address, while the dialog rebuilt the link from whatever address your browser was on — so on the Vite dev server it copied `localhost:3001`, and an admin working on the relay Mac copied `localhost:4000`. The dialog now shows the relay's link. The same applies to "Copy link to comment" and to the relay address in the agent command under Settings → Tokens: with `TAPFLOW_RELAY_URL` (or `relay.url`) set, all three use it. With nothing set they keep your browser's address, except that a browser on `localhost` gets the relay's LAN address, which the agent command already did. The invite response gains an `inviteUrl` field, `null` when the relay has no address a teammate can open.
+
+  **A tunnel's address is the one it actually got** ([#794](https://github.com/jo-duchan/tapflow/issues/794)). Choosing Tailscale in `tapflow init` leaves `publicUrl` empty and `tapflow start` detects the MagicDNS name, but only the startup banner ever used it — invitations still pointed at `localhost:4000`. The tunnel now starts before the relay and hands over what it got, so invitations, dashboard links and the CORS allowlist use the detected address, and a tunnel that fails to start no longer leaves its configured address in any of them. A tunnel address is for teammates' browsers: the agent command uses `relay.url`, never the tunnel, so an agent on the relay's own network does not stream through it. If the port is already taken, the command now stops before touching the tunnel, rather than restarting a running instance's rathole server on its way to failing.
+
+  **Running the relay image without `TAPFLOW_RELAY_URL` is said out loud.** The relay logs a warning at startup when it runs in a container with no address a teammate can open, since invitations then point at `localhost`. Inside a container it also stops offering its bridge address (such as `172.17.0.2`) as the LAN address for the agent command.
+
+  **The invite dialog no longer claims a copy that did not happen.** It said "copied" even when the browser refused, and on a plain-HTTP page, which has no clipboard API, it reported the invitation itself as failed. The invite link, a new token and the agent command now sit in read-only fields that take focus, so on such a page they can be selected and copied by keyboard, and the invite dialog states its outcome to screen readers, which cannot hear a toast behind an open dialog. "Copy & close" on a new token no longer does nothing on a plain-HTTP page.
+
+  - @tapflowio/protocol@0.22.0
+  - @tapflowio/agent-core@0.22.0
+
+## 0.21.0
+
+### Minor Changes
+
+- **The relay has a documented Docker deployment.** The image has been published since 0.20.0, and until now nothing said so — no page in the guide mentioned Docker, so the only way to find it was to guess the name. `docs/guide/self-hosting.md` now carries a Compose file, the settings a container needs that a local install does not, and the reasons behind both.
+
+  **The image is the relay, not tapflow.** It serves the dashboard and brokers traffic. The agents that drive simulators and emulators are macOS-native and stay on your Macs, connecting outbound to the container with an `agent`-scope token. A container alone streams nothing.
+
+  **Run it on the same Mac or a box on your own network — not on a cloud VM.** Every video and audio frame between an agent and a browser passes through the relay, so a relay outside your network sends app screen data out with it, and the detour costs more latency than a 30fps budget can absorb.
+
+  Three things a container needs that a local install does not, each of which fails in a way that does not name its cause:
+
+  - **The data volume is required, not a convenience.** The relay writes a per-install secret to `<dataDir>/jwt-secret` and reuses it. Without the volume that file lives in the container's writable layer, which `docker restart` keeps but anything that _recreates_ the container destroys — an image update, `docker compose down && up`, `docker rm`. A new secret logs out every user and drops every agent at once.
+  - **`TAPFLOW_RELAY_URL` decides what invite links say.** The relay never reads its address from the `Host` header, because a forged one would turn an invite into a phishing link. Unset, invites point at `localhost:4000` — the recipient's own machine.
+  - **`TAPFLOW_ADMIN_EMAIL` and `TAPFLOW_ADMIN_PASSWORD` create the first account.** The interactive setup a local install offers has no terminal to run in here.
+
+  The build also gained the toolchain its own fallback assumed. `better-sqlite3` is fetched as a prebuilt binary and compiles from source when that fetch fails — except the builder had no compiler, so the fallback could never run and a failed _download_ surfaced as a missing Python. Forcing the source path through CI measured the fallback at 82s on amd64 and 90s on arm64, against about 35s when the prebuilt binary arrives.
+
+  Every published image is booted in CI on both architectures before the manifest is pushed: the dashboard is fetched over HTTP, the auth endpoint is asked for its state, a WebSocket is opened, and the container is destroyed and recreated to prove the JWT secret survived on the volume.
+
+  **Installing a build into it works, which it did not when this was written.** The relay used to hand the agent its own filesystem path, so a container — whose paths mean nothing on the Mac running the agent — could stream a device and never install anything onto it. That is fixed in this same release, and it is why the documentation ships now rather than earlier: a documented deployment that cannot do the thing tapflow is for would have been worse than no documentation at all.
+
+### Patch Changes
+
+- da074d3: Show a consistent unsupported-streaming status for Android and iOS viewers.
+- 15e98fc: Pressing the upper half of an iPhone's Volume Up pressed the **Action** button instead. The tooltip said Action and the press followed it, so a tester reaching for volume changed a setting they never opened.
+
+  A button's catchment was a fixed radius around its _centre_, and the first button in range won rather than the nearest — so on an iPhone 15 Pro, where the Action button sits close above a much taller Volume Up, Action's circle covered Volume Up's own pixels and claimed them because the agent happens to list it first. Catchment is now measured to each button's rectangle, the nearest one wins, and a press inside a button can no longer lose to a neighbour. Targets are as generous as before: the same margin now surrounds the button instead of radiating from its middle.
+
+- bd7a9f5: Serve the dashboard compressed on plain-HTTP deployments. Browsers only offer Brotli on a secure origin, so over `http://<lan-box>:4000` the relay had only `.br` siblings on disk and sent every asset uncompressed — measured on the largest bundle, 300K where gzip is 92K. The build now emits `.gz` beside `.br` and `serveStatic` picks whichever the client will take, preferring Brotli when both are offered and honouring an explicit `q=0` over a permissive `*`. Assets under `/assets/` are marked `immutable`, `index.html` `no-cache`, and `Vary: Accept-Encoding` is always set so a shared cache cannot cross-serve (#260, #737).
+- 7d8eb4e: **Installing a build works when the relay is not on the same machine as the agent.** It never did. The relay sent the agent its own filesystem path and the agent opened it, which is only true when the two share a disk — so on the topology the guide recommends, a relay on a LAN box with agents on Macs, every install failed. A relay in a container failed the same way for the same reason.
+
+  **And it failed by blaming the build.** `unzip` said `cannot find or open`, the agent threw that away, and what reached the browser was "check this is a simulator .app.zip". The archive was fine every time. The tool's own words are in the message now, and a download that fails is reported as a download failing — the three causes a person acts on differently (a bad archive, a relay that cannot be reached, a transfer cut short) had been collapsed into the one sentence that was wrong for all of them.
+
+  The relay now mints a single-use credential where it has already checked who owns the session, and serves that one build against it. Nothing is added to any token's permissions: an agent still cannot ask for a build it was not told to install, and `tapflow start` — whose agent runs with no token at all — keeps working, which a permissions-based approach would have broken. The agent builds the address from the relay URL it is already connected to rather than from anything the relay claims about itself, because that is the one address known to be reachable.
+
+  A truncated transfer is caught against a size that travels with the instruction rather than against `Content-Length`, which a proxy is free to drop — a check that reads an absent header passes while looking at nothing, and hands on a half a file to be reported as a damaged one. Downloads have a stall timeout, so a half-open socket fails instead of hanging forever and leaving a temp copy of the build behind; the Android install path gained the cleanup it never had. An agent too old to fetch builds is unaffected and installs exactly as before, and the relay says so once in its log rather than guessing whether that agent is somewhere else — it cannot tell, and a check that is wrong in both directions is worse than none.
+
+  `@tapflowio/agent-core` gains `downloadBuild`, and `@tapflowio/protocol`'s `app:install` gains `buildTicket`, `buildName` and `buildBytes` — additive, so an agent that predates them keeps working on the field it already reads. Both are named here rather than left to ride the version bump because a third-party platform built on `AgentRegistry.register()` reads those changelogs, and this is the API it would use to support installs from a relay it does not share a disk with.
+
+- Updated dependencies [7d8eb4e]
+  - @tapflowio/agent-core@0.21.0
+  - @tapflowio/protocol@0.21.0
+
 ## 0.20.1
 
 ### Patch Changes

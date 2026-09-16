@@ -1,5 +1,61 @@
 # tapflow
 
+## 0.22.0
+
+### Minor Changes
+
+- 7359488: **iOS input and streaming find SimulatorKit where Xcode 27 put it** ([#797](https://github.com/jo-duchan/tapflow/issues/797)). Xcode 27 moved `SimulatorKit.framework` out of the developer directory (`Contents/Developer/Library/PrivateFrameworks/`) into `Contents/SharedFrameworks/`. The touch and screen-capture helpers knew only the old location, so on a Mac whose only Xcode is 27 they could not start: no input reached the simulator and no stream opened. On a Mac where Xcode 27 is selected and an older Xcode is also in `/Applications`, they fell back to that Xcode's SimulatorKit instead; whether that worked against Xcode 27's simulator service was not tested. Both locations are now checked on the selected Xcode before any other Xcode is, and each helper logs the SimulatorKit it is about to load.
+
+  **Bezels come back on every iPad and most iPhones.** Xcode 27 no longer lists a device's screen size in its `profile.plist` and publishes it in `capabilities.plist` instead, so a device whose frame is assembled from nine slices rather than one image lost its bezel. That is most of them: on Xcode 27, 104 of 129 device types — every iPad, Apple Watch and iPod touch, and the iPhone 6s through 13, 14, 14 Plus, SE, 16e and 17e. The 14 Pro models, Air, and every iPhone 15, 16, 17 and 18 model other than 16e and 17e draw their frame from one image and never lost it. The size is now read from either file; on Xcode 27.0 each of those 104 carries one, and on Xcode 26 it is read exactly as before.
+
+### Patch Changes
+
+- a12ff53: **The invite link the dashboard copies is the one the invitation email carries** ([#788](https://github.com/jo-duchan/tapflow/issues/788)). The email was built from the relay's configured address, while the dialog rebuilt the link from whatever address your browser was on — so on the Vite dev server it copied `localhost:3001`, and an admin working on the relay Mac copied `localhost:4000`. The dialog now shows the relay's link. The same applies to "Copy link to comment" and to the relay address in the agent command under Settings → Tokens: with `TAPFLOW_RELAY_URL` (or `relay.url`) set, all three use it. With nothing set they keep your browser's address, except that a browser on `localhost` gets the relay's LAN address, which the agent command already did. The invite response gains an `inviteUrl` field, `null` when the relay has no address a teammate can open.
+
+  **A tunnel's address is the one it actually got** ([#794](https://github.com/jo-duchan/tapflow/issues/794)). Choosing Tailscale in `tapflow init` leaves `publicUrl` empty and `tapflow start` detects the MagicDNS name, but only the startup banner ever used it — invitations still pointed at `localhost:4000`. The tunnel now starts before the relay and hands over what it got, so invitations, dashboard links and the CORS allowlist use the detected address, and a tunnel that fails to start no longer leaves its configured address in any of them. A tunnel address is for teammates' browsers: the agent command uses `relay.url`, never the tunnel, so an agent on the relay's own network does not stream through it. If the port is already taken, the command now stops before touching the tunnel, rather than restarting a running instance's rathole server on its way to failing.
+
+  **Running the relay image without `TAPFLOW_RELAY_URL` is said out loud.** The relay logs a warning at startup when it runs in a container with no address a teammate can open, since invitations then point at `localhost`. Inside a container it also stops offering its bridge address (such as `172.17.0.2`) as the LAN address for the agent command.
+
+  **The invite dialog no longer claims a copy that did not happen.** It said "copied" even when the browser refused, and on a plain-HTTP page, which has no clipboard API, it reported the invitation itself as failed. The invite link, a new token and the agent command now sit in read-only fields that take focus, so on such a page they can be selected and copied by keyboard, and the invite dialog states its outcome to screen readers, which cannot hear a toast behind an open dialog. "Copy & close" on a new token no longer does nothing on a plain-HTTP page.
+
+- Updated dependencies [e2123d5]
+- Updated dependencies [0699c26]
+- Updated dependencies [a12ff53]
+- Updated dependencies [7359488]
+  - @tapflowio/relay@0.22.0
+  - @tapflowio/ios-agent@0.22.0
+  - @tapflowio/android-agent@0.22.0
+  - @tapflowio/agent-core@0.22.0
+  - @tapflowio/flow-runner@0.22.0
+
+## 0.21.0
+
+### Patch Changes
+
+- 676641f: An iOS app that reads `SCNetworkReachability` is now told when its simulator is taken off the network. Taking a device offline already stopped its traffic, and an app built on `NWPathMonitor` drew its offline state correctly — but Alamofire's `NetworkReachabilityManager` and the older `Reachability.swift` read a different API, and that one kept answering "reachable" while every request failed. The offline screen a tester came to check never appeared.
+
+  The fix answers that API too, and **re-fires the callback the library is actually listening on** rather than only changing what a poll would return: a consumer caches what its callback last told it and never polls, so faking the getter alone moves a number nobody reads. Both ways of scheduling that callback are covered — a dispatch queue and a run loop.
+
+- Updated dependencies [400f887]
+- Updated dependencies [7f8ba98]
+- Updated dependencies [da074d3]
+- Updated dependencies [801d360]
+- Updated dependencies [676641f]
+- Updated dependencies [15e98fc]
+- Updated dependencies [253e94c]
+- Updated dependencies [26f79c3]
+- Updated dependencies [cc8de63]
+- Updated dependencies [913a675]
+- Updated dependencies [9bcb989]
+- Updated dependencies
+- Updated dependencies [bd7a9f5]
+- Updated dependencies [7d8eb4e]
+  - @tapflowio/ios-agent@0.21.0
+  - @tapflowio/android-agent@0.21.0
+  - @tapflowio/relay@0.21.0
+  - @tapflowio/agent-core@0.21.0
+  - @tapflowio/flow-runner@0.21.0
+
 ## 0.20.1
 
 ### Patch Changes

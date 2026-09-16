@@ -17,9 +17,11 @@
   </p>
 
   <p>
-    <img src="https://img.shields.io/badge/platform-macOS%20agent-lightgrey" alt="macOS Agent" />
+    <a href="https://github.com/jo-duchan/tapflow/stargazers"><img src="https://img.shields.io/github/stars/jo-duchan/tapflow" alt="GitHub stars" /></a>
+    <a href="https://hub.docker.com/r/tapflow/tapflow"><img src="https://img.shields.io/docker/pulls/tapflow/tapflow" alt="Docker pulls" /></a>
     <a href="https://github.com/jo-duchan/tapflow/releases"><img src="https://img.shields.io/github/v/release/jo-duchan/tapflow?include_prereleases&sort=semver" alt="Latest release" /></a>
     <a href="https://github.com/jo-duchan/tapflow/commits/main"><img src="https://img.shields.io/github/last-commit/jo-duchan/tapflow" alt="Last commit" /></a>
+    <img src="https://img.shields.io/badge/platform-macOS%20agent-lightgrey" alt="macOS Agent" />
   </p>
 
   <p>
@@ -136,7 +138,7 @@ Navigate to `http://localhost:4000` and sign in with the account you just create
 | Component | Requirements |
 |-----------|-------------|
 | **Relay server** | Node.js ≥ 22, any OS (Linux/macOS), ~512 MB RAM |
-| **iOS Agent** | macOS, Xcode + iOS Simulator runtime (or run `tapflow setup ios`), Node.js ≥ 22 |
+| **iOS Agent** | macOS 26 or 27, Xcode 26 or 27 + iOS Simulator runtime (or run `tapflow setup ios`), Node.js ≥ 22 |
 | **Android Agent** | macOS, Java + Android SDK with an AVD (or run `tapflow setup android`), Node.js ≥ 22 |
 | **Browser (QA)** | Any modern browser — Chrome, Firefox, Safari, Edge |
 
@@ -156,12 +158,16 @@ What's included:
 - **Touch, swipe & pinch** — real-time input forwarded to the simulator or emulator.
 - **Deeplink toolbar** — open supported deeplinks directly from the QA toolbar.
 - **Keyboard shortcuts** — trigger simulator toolbar actions from the keyboard.
+- **Clipboard sync** — copy and paste between your Mac and the device, in both directions. Copying *from* the device needs the dashboard on HTTPS or localhost; over plain HTTP the text lands on the device's own clipboard and the dashboard says so.
+- **Device audio** — the app's sound comes back to the browser tab.
+- **Network control** — take a device off the network and put it back, to test how the app behaves offline. iOS installs a network filter once; Android needs nothing.
 - **App Center** — upload `.app.zip` / `.apk` and track builds by status (Backlog / In Progress / Done / Rejected).
 - **Session recordings** — record and share QA sessions, kept on the relay for ~72 hours, then purged automatically.
 - **Screenshot REST endpoint** — `GET /api/v1/sessions/:sessionId/screenshot` for CI and AI agents.
 - **Mac resource monitoring** — CPU & RAM per agent, to spot overloaded hosts before assigning sessions.
 - **Team management** — invite links, roles (Admin / Developer / QA / Viewer), and Personal Access Tokens.
-- **MCP Server** — `@tapflowio/mcp-server` lets Claude Code and other LLM agents control simulators as native tools.
+- **Flow runner** — `tapflow flow run` replays a YAML flow with condition-based waits and a JUnit report, and calls no LLM at replay time. Experimental.
+- **MCP Server** — `@tapflowio/mcp-server` lets Claude Code and other LLM agents control simulators as native tools. Experimental.
 
 <span id="latency-note"></span>
 > <sup>1</sup> On a real LAN, decode-to-present measures in the low tens of milliseconds (p50 ~11–17 ms with the WASM software decoder; faster with WebCodecs on HTTPS); end-to-end "glass-to-glass" latency adds your network's round trip on top. See the [streaming latency log](https://github.com/jo-duchan/tapflow/blob/main/contributing/streaming-latency-log.md) for the full measurements, conditions, and known limitations.
@@ -196,6 +202,14 @@ npm install -g pm2 tapflow
 JWT_SECRET=$(openssl rand -hex 32) pm2 start tapflow --name relay -- relay start
 pm2 save && pm2 startup
 ```
+
+**Or run the relay with Docker:**
+
+```sh
+docker run -d -p 4000:4000 -v "$PWD/data:/app/.tapflow/data" tapflow/tapflow:latest
+```
+
+> The image is the relay only — agents stay on your Macs. The volume is required (it holds the sign-in secret), and invite links need `TAPFLOW_RELAY_URL`. See [Docker Compose](https://www.tapflow.dev/guide/self-hosting#docker-compose-lan-server) for the full setup.
 
 **Each Mac agent:**
 

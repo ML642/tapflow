@@ -6,6 +6,7 @@ import { Link2, ImagePlus, ArrowUp } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Comment } from '@/lib/types'
 import { UserAvatar } from '@/components/UserAvatar'
+import { joinPath, loadTeammateBases } from '@/lib/publicLink'
 
 // SQLite datetime('now') returns "YYYY-MM-DD HH:MM:SS" (UTC, no timezone marker).
 // Normalize to unambiguous ISO 8601 UTC so all browsers parse it correctly.
@@ -78,11 +79,22 @@ export function CommentPanel({ buildId }: Props) {
     setTimeout(() => { el.style.backgroundColor = '' }, 2000)
   }, [comments])
 
-  function copyLink(id: number) {
-    const url = `${location.origin}${location.pathname}${location.search}#comment-${id}`
-    navigator.clipboard.writeText(url)
-      .then(() => toast.success('Link copied'))
-      .catch(() => toast.error('Could not copy link'))
+  // Started on mount so a click usually copies without waiting on the network.
+  useEffect(() => { void loadTeammateBases() }, [])
+
+  // A link to a comment is for someone else, so its origin is the teammate base and its path is this
+  // page's. It waits for the lookup rather than copying the browser's own address in the meantime.
+  async function copyLink(id: number) {
+    const { linkBase } = await loadTeammateBases()
+    const url = joinPath(linkBase, `${location.pathname}${location.search}#comment-${id}`)
+    try {
+      // Absent on a plain-HTTP page.
+      if (!navigator.clipboard) throw new Error('no clipboard')
+      await navigator.clipboard.writeText(url)
+      toast.success('Link copied')
+    } catch {
+      toast.error('Could not copy link')
+    }
   }
 
   function handleFileChange(f: File) {
@@ -148,7 +160,7 @@ export function CommentPanel({ buildId }: Props) {
                               size="icon"
                               className="h-4 w-4 ml-0.5 opacity-0 group-hover:opacity-50 hover:!opacity-100 group-focus-within:opacity-50 focus-visible:!opacity-100 transition-opacity"
                               aria-label="Copy link to comment"
-                              onClick={() => copyLink(c.id)}
+                              onClick={() => void copyLink(c.id)}
                             >
                               <Link2 className="h-3 w-3" aria-hidden="true" />
                             </Button>

@@ -53,6 +53,15 @@ function fakeHostBinary(dir: string, log: string, sleepMs = 0, failNth = 0): str
     // reaches the mismatch branch *through XPC*. Without it only the file channel ever disagrees,
     // so the channel name in that warning could be wrong for the path 99% of traffic takes.
     + `  [ -e "${dir}/CONFIRM_EMPTY" ] && { printf '{"enforcing":true,"rule":[],"pid":7}\\n'; exit 0; }\n`
+    // `CONFIRM_STALE_ONCE` answers **one** confirmation with the rule written inside it, then removes
+    // itself: a provider one write behind, which is what macOS 27 showed — the first ask after a write
+    // held the previous rule and the next one agreed. `CONFIRM_EMPTY` is the permanent form, and only
+    // the pair can tell a confirmation that waits from one that refuses.
+    + `  if [ -e "${dir}/CONFIRM_STALE_ONCE" ]; then S=$(cat "${dir}/CONFIRM_STALE_ONCE"); rm -f "${dir}/CONFIRM_STALE_ONCE"; printf '{"enforcing":true,"rule":%s,"pid":7}\\n' "$S"; exit 0; fi\n`
+    // `CONFIRM_OFF_ONCE` answers one confirmation as a filter that is not enforcing, then removes
+    // itself: the first ask behind a write that switched a disabled filter back on, measured on macOS
+    // 27 five times in five.
+    + `  if [ -e "${dir}/CONFIRM_OFF_ONCE" ]; then rm -f "${dir}/CONFIRM_OFF_ONCE"; printf '{"enforcing":false,"rule":[],"pid":7}\\n'; exit 0; fi\n`
     + `  R=$(cat "${dir}/rule" 2>/dev/null || echo "")\n`
     + `  printf '{"enforcing":true,"rule":%s,"pid":1}\\n' "$(echo "$R" | ${ruleToJson})"\n`
     + `  exit 0\n`
@@ -1153,16 +1162,59 @@ describe('SimulatorNetwork', () => {
       nothingApplied()
     })
 
+    it('waits out a provider one write behind on the way offline instead of refusing', async () => {
+      // **The first press on macOS 27.** Taking a device offline asked the provider right after the
+      // write and heard the rule from before it: the tester's first offline press was refused on each
+      // of three tries, logged as `wanted offline, provider holds []` over XPC and drawn as a Mac that
+      // is not set up, and the next press went through. A synthetic run on the same host saw the
+      // provider settle 28ms after an ask that still held the previous rule. A confirmation that stops
+      // at its first answer turns that lag into `filter-unavailable`.
+      armed()
+      writeFileSync(join(dir, 'CONFIRM_STALE_ONCE'), '[]')
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const info = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const net = make()
+
+      await expect(net.setOffline(UDID, true)).resolves.toEqual({ offline: true, available: true })
+      const said = warn.mock.calls.flat().join(' ')
+      const told = info.mock.calls.flat().join(' ')
+      warn.mockRestore()
+      info.mockRestore()
+      expect(existsSync(join(dir, 'CONFIRM_STALE_ONCE')), 'the stale answer was never asked for').toBe(false)
+      expect(rules().at(-1), 'the rule does not hold the device').toContain(UDID)
+      expect(said, 'a lag that resolved was logged as a disagreement').not.toContain('disagrees')
+      // **Existence, so it cannot pass by staying quiet.** The four refusals in the field log were the
+      // only evidence this lag existed; once it is waited out, this line is what is left of it.
+      expect(told, 'a lag that resolved left no trace').toMatch(/caught up for .* after 2 asks/)
+    })
+
+    it('waits out a provider one write behind on the way back online', async () => {
+      // The same lag in the other direction: the tester reported one online press in three refused on
+      // that host, logged as the provider still holding the device.
+      armed()
+      const net = make()
+      await expect(net.setOffline(UDID, true)).resolves.toEqual({ offline: true, available: true })
+      writeFileSync(join(dir, 'CONFIRM_STALE_ONCE'), JSON.stringify([UDID]))
+
+      await expect(net.setOffline(UDID, false)).resolves.toEqual({ offline: false, available: true })
+      expect(existsSync(join(dir, 'CONFIRM_STALE_ONCE')), 'the stale answer was never asked for').toBe(false)
+      expect(rules().at(-1) ?? '', 'the rule still holds the device').not.toContain(UDID)
+    })
+
     it('names the channel as xpc when the provider itself disagrees', async () => {
       // **The twin of the file case below, and the one the diagnostic field is mostly for.** XPC is the
       // channel almost every confirmation takes, so a `from` that is only ever asserted on the fallback
       // can be wrong exactly where it matters — measured: labelling the XPC answer `'file'` passed all
       // 83 tests. The state file here is fresh and correct; it is not consulted, because the ask
       // answered.
+      //
+      // A short deadline, because a provider that keeps disagreeing is now asked again until the
+      // confirmation deadline before it is refused. This test is about the refusal and what it logs,
+      // not about how long the wait is.
       armed()
       writeFileSync(join(dir, 'CONFIRM_EMPTY'), '')
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-      const net = make()
+      const net = make(undefined, 200)
 
       await expect(net.setOffline(UDID, true)).resolves.toEqual({
         offline: false, available: false, reason: 'filter-unavailable',
@@ -1171,6 +1223,38 @@ describe('SimulatorNetwork', () => {
       warn.mockRestore()
       expect(said, 'the disagreement did not name the provider that answered').toContain('provider 7')
       expect(said, 'an answer from XPC was reported as coming from the file').toContain('read over xpc')
+    })
+
+    it('gives the file only what the recheck left of the deadline', async () => {
+      // **A bound a review found broken, held by timing because only timing shows it.** A provider that
+      // keeps answering with the wrong rule is asked again until the deadline; when its XPC channel goes
+      // away near the end, the fallback reads the file with what is left. Starting a fresh deadline there
+      // put the worst case near seven seconds, and let a late publication overturn a refusal the deadline
+      // had already reached. `NO_CONFIRM` is the fake's first check, so creating it mid-wait fails every
+      // later ask; `NO_STATE` keeps the file from answering at all.
+      armed()
+      writeFileSync(join(dir, 'CONFIRM_EMPTY'), '')
+      writeFileSync(join(dir, 'NO_STATE'), '')
+      let refusedAt = 0
+      const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        if (refusedAt === 0 && String(args[0]).includes('gave no answer')) refusedAt = Date.now()
+      })
+      const net = make(undefined, 2_000)
+      const goes = setTimeout(() => writeFileSync(join(dir, 'NO_CONFIRM'), ''), 1_700)
+      const began = Date.now()
+
+      await expect(net.setOffline(UDID, true)).resolves.toMatchObject({ reason: 'filter-unavailable' })
+      clearTimeout(goes)
+      const said = warn.mock.calls.flat().join(' ')
+      warn.mockRestore()
+      // Existence, so a refusal that says nothing cannot pass: this path used to leave no line at all.
+      expect(said, 'a refusal with no answer left no line').toMatch(/gave no answer for .* after \d+ asks?/)
+      // **Timed to the refusal, not to the call.** The rule writes before and after it run the fake
+      // host's shell pipeline, and counting them failed the first version of this test on correct code:
+      // about 1.5s against a 1.4s bound, with the broken version only 300ms slower. Timed here, with the
+      // XPC channel going 300ms before a 2s deadline, the file getting the remainder refuses near 2s plus
+      // one write and starting over lands near 3.7s plus one write.
+      expect(refusedAt - began, `refused ${refusedAt - began}ms after the request`).toBeLessThan(3_000)
     })
 
     it('names the provider and the channel when the published rule disagrees', async () => {
@@ -1203,17 +1287,42 @@ describe('SimulatorNetwork', () => {
       expect(said, 'the disagreement did not say which channel answered').toContain('read over file')
     })
 
+    it('waits out a filter the write just switched back on', async () => {
+      // **Every rule write enables the filter**, so a press on a Mac whose filter was switched off turns
+      // it back on, and the first ask behind that write hears `enforcing: false`. Measured on a macOS
+      // 27.0 Mac after `--off`: five times in five, the second ask — under 90ms after the write —
+      // agreeing each time. Before the recheck covered it, that press was refused without a log line.
+      armed()
+      writeFileSync(join(dir, 'CONFIRM_OFF_ONCE'), '')
+      const info = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const net = make()
+
+      await expect(net.setOffline(UDID, true)).resolves.toEqual({ offline: true, available: true })
+      const told = info.mock.calls.flat().join(' ')
+      info.mockRestore()
+      expect(existsSync(join(dir, 'CONFIRM_OFF_ONCE')), 'the not-enforcing answer was never asked for').toBe(false)
+      expect(told, 'the re-enable lag left no trace').toMatch(/caught up for .* after 2 asks/)
+    })
+
     it('refuses when the provider answers that it is not enforcing', async () => {
       // `rule: []` alone cannot carry this: an idle provider with no offline device says the same
       // thing. Measured on a `--off` provider — alive, answering in 16ms, holding nothing — which is
       // why `enforcing` is a field of its own rather than something derived from the rule.
+      //
+      // A short deadline: a not-enforcing answer is now asked again until the deadline, since the first
+      // one behind a write is usually a filter still switching on (above). This is a filter that stays
+      // off, and the refusal has to say so — it used to leave no line at all.
       armed()
       writeFileSync(join(dir, 'NOT_ENFORCING'), '')
-      const net = make()
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const net = make(undefined, 200)
 
       await expect(net.setOffline(UDID, true)).resolves.toEqual({
         offline: false, available: false, reason: 'filter-unavailable',
       })
+      const said = warn.mock.calls.flat().join(' ')
+      warn.mockRestore()
+      expect(said, 'a filter that stayed off was refused without saying so').toMatch(/not enforcing for .* after \d+ asks?/)
       nothingApplied()
     })
 
@@ -1225,9 +1334,11 @@ describe('SimulatorNetwork', () => {
       //
       // Found by mutation: deleting the `enforcing` branch left the whole suite green, because the
       // test above reaches the refusal through the membership mismatch instead.
+      // A short deadline, for the reason the test above gives: a filter that stays off is asked again
+      // until the deadline before it is refused.
       armed()
       writeFileSync(join(dir, 'NOT_ENFORCING'), '')
-      const net = make()
+      const net = make(undefined, 200)
 
       await expect(net.setOffline(UDID, false)).resolves.toEqual({
         offline: false, available: false, reason: 'filter-unavailable',

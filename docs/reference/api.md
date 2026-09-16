@@ -498,10 +498,10 @@ Body (JSON):
 **Response `201`**
 
 ```json
-{ "token": "abc123...", "emailSent": true }
+{ "token": "abc123...", "emailSent": true, "inviteUrl": "http://192.168.0.10:4000/invite?token=abc123..." }
 ```
 
-If SMTP is not configured, `emailSent: false` is returned. Use the `token` to build the invite link: `<relay-url>/invite?token=<token>`.
+If SMTP is not configured, `emailSent: false` is returned. When `inviteUrl` is not `null`, it is the link the invitation email carries. It is built from the tunnel's `publicUrl`, otherwise `relay.url` (`TAPFLOW_RELAY_URL`). When `tapflow start` or `tapflow relay start` runs the tunnel, that is the address the tunnel got, including one Tailscale detected. A standalone relay uses the configured value. An `http://` tunnel address is not used when the relay serves HTTPS. `inviteUrl` is `null` when there is no candidate, or when the only one is an address a teammate cannot open, such as `localhost`. In that case, build the link from the address teammates use to reach the relay: `<relay-url>/invite?token=<token>`.
 
 
 ### `PATCH /api/v1/team/members/:id`

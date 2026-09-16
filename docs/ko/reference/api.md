@@ -498,10 +498,10 @@ Body (JSON):
 **응답 `201`**
 
 ```json
-{ "token": "abc123...", "emailSent": true }
+{ "token": "abc123...", "emailSent": true, "inviteUrl": "http://192.168.0.10:4000/invite?token=abc123..." }
 ```
 
-SMTP가 설정되지 않은 경우 `emailSent: false`가 반환됩니다. `token` 값을 사용해 `<relay-url>/invite?token=<token>` 링크를 직접 공유하세요.
+SMTP가 설정되지 않은 경우 `emailSent: false`가 반환됩니다. `inviteUrl`이 `null`이 아니면 초대 이메일의 링크와 같습니다. 터널의 `publicUrl`을 먼저 쓰고 없으면 `relay.url`(`TAPFLOW_RELAY_URL`)을 씁니다. `tapflow start`나 `tapflow relay start`가 터널을 띄우면 터널이 받은 주소를 씁니다(Tailscale이 감지한 주소 포함). 단독 실행한 릴레이는 설정값을 씁니다. 릴레이가 HTTPS로 동작하면 `http://` 터널 주소는 쓰지 않습니다. 후보가 없거나 `localhost`처럼 팀원이 열 수 없는 주소뿐이면 `null`입니다. 이때는 팀원이 접속하는 릴레이 주소로 `<relay-url>/invite?token=<token>` 링크를 직접 만드세요.
 
 
 ### `PATCH /api/v1/team/members/:id`

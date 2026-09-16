@@ -1,27 +1,39 @@
 import type { TapflowConfig } from './config.js'
-import { buildInviteBaseUrl } from './publicUrl.js'
+import { buildInviteBaseUrl, forTeammates, resolvePublicBaseUrl, resolvePublicBaseUrls, type TunnelRuntime } from './publicUrl.js'
 
 type ProxyCfg = Pick<TapflowConfig, 'tunnel' | 'relay' | 'local'>
 
-// Allow cross-origin PAT use only from the configured public origin + loopback (LAN is same-origin).
-export function buildCorsOrigins(cfg: ProxyCfg, port: number): string[] {
-  // Skip buildInviteBaseUrl's localhost fallback — it would allowlist a stale loopback at config.local.port under a different --port.
-  const configuredOrigin = (() => {
-    if (!cfg.tunnel?.publicUrl && !cfg.relay.url) return null
-    try { return new URL(buildInviteBaseUrl(cfg)).origin } catch { return null }
-  })()
-  const origins = [configuredOrigin, `http://localhost:${port}`, `http://127.0.0.1:${port}`]
+// Allow cross-origin PAT use only from the public origins + loopback (LAN is same-origin).
+export function buildCorsOrigins(cfg: ProxyCfg, port: number, tunnel?: TunnelRuntime): string[] {
+  // Not buildInviteBaseUrl: its localhost fallback would allowlist a stale loopback at config.local.port under a different --port.
+  // Every public base, not only the preferred one: a detected tunnel must not push relay.url out.
+  const configuredOrigins = resolvePublicBaseUrls(cfg, tunnel).map((base) => {
+    try { return new URL(base).origin } catch { return null }
+  })
+  const origins = [...configuredOrigins, `http://localhost:${port}`, `http://127.0.0.1:${port}`]
     .filter((o): o is string => o !== null)
   return [...new Set(origins)]
 }
 
 // A proxied/tunneled relay needs a public URL, or the CSRF/CORS allowlist stays loopback-only and blocks proxied POSTs.
-export function proxyWithoutPublicUrlWarning(cfg: ProxyCfg): string | null {
-  if (cfg.local.trustedProxies.length > 0 && !cfg.tunnel?.publicUrl && !cfg.relay.url) {
+export function proxyWithoutPublicUrlWarning(cfg: ProxyCfg, tunnel?: TunnelRuntime): string | null {
+  if (cfg.local.trustedProxies.length > 0 && resolvePublicBaseUrl(cfg, tunnel) === null) {
     return (
-      'TAPFLOW_TRUSTED_PROXIES is set but no public URL (tunnel.publicUrl / relay.url) is configured. ' +
+      'TAPFLOW_TRUSTED_PROXIES is set but no public URL is in effect (a started tunnel\'s publicUrl, or relay.url). ' +
       'Cross-origin dashboard requests may be blocked by the CSRF guard — set the public URL for proxied deployments.'
     )
   }
   return null
+}
+
+// Inside a container the relay cannot learn the address people type, and running without one fails
+// silently: invitation mail opens the recipient's own machine. The Docker docs ask for TAPFLOW_RELAY_URL;
+// this is the same request at the moment it was skipped. Outside a container a missing public URL is the
+// normal LAN setup, so it says nothing there. `inContainer` is a parameter so the decision is testable.
+export function containerWithoutPublicUrlWarning(cfg: ProxyCfg, inContainer: boolean): string | null {
+  if (!inContainer || forTeammates(resolvePublicBaseUrl(cfg)) !== null) return null
+  return (
+    `Running in a container with no public URL a teammate can open, so invitation links point at ${buildInviteBaseUrl(cfg)}. ` +
+    'Set TAPFLOW_RELAY_URL to the address people type, e.g. http://<this-box-ip>:4000.'
+  )
 }
