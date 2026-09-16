@@ -385,10 +385,12 @@ export interface InstallOptions {
    * callback leaves the install exactly as silent as it was, which is the old behaviour rather than
    * a broken one.
    *
-   * **Not guarded against throwing, deliberately.** A callback that threw after `disabling` would
-   * leave the filter off with no outcome and no banner — but both callers pass `step`, which is a
-   * `console.log`, and node does not raise a synchronous error there. No reaching path was found, so
-   * this is the reason written down rather than a `try` around five call sites.
+   * **Wrapped so it cannot abort the install — and the reason is the cost, not the likelihood.**
+   * Two independent reviews raised this and neither found a reaching path: both callers pass `step`,
+   * which is a `console.log`, and node's console swallows write errors rather than raising them. It
+   * is guarded anyway, through `reportProgress`, because a callback that threw after `disabling`
+   * would leave the Mac with its filter switched off, no outcome, and no banner saying why. Four
+   * lines against that is not a trade worth thinking about twice.
    */
   onProgress?: (stage: InstallStage) => void
   /**
@@ -459,6 +461,23 @@ const INSTALL_TIMEOUT_MS = 180_000
  * No `sudo`: `/Applications` is writable by an admin user, and `ditto` preserves the signature, which
  * a plain copy does not. Measured.
  */
+/**
+ * Report a stage, and never let that reporting change the install.
+ *
+ * **The whole point is the `catch`.** Every call below sits between steps that leave the Mac in an
+ * intermediate state — the filter is switched off before the copy and stays off until `--install`
+ * turns it back on — so an exception escaping here would abandon the run at exactly the moment it
+ * has something to clean up, with no `InstallOutcome` for either command to render a banner from.
+ * The reasoning about whether a caller can actually throw is on `InstallOptions.onProgress`.
+ */
+function reportProgress(opts: InstallOptions, stage: InstallStage): void {
+  try {
+    opts.onProgress?.(stage)
+  } catch {
+    // Reporting is not the job. A reporter that cannot report is not a reason to stop installing.
+  }
+}
+
 export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
   if (process.platform !== 'darwin') return { status: 'not-macos' }
   const shipped = shippedAppPath()
@@ -466,7 +485,7 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
 
   // Ahead of the probes rather than after them: this is the first thing that can take time, and the
   // refusals below all return without ever reaching a report.
-  opts.onProgress?.('checking')
+  reportProgress(opts, 'checking')
   const state = readNetFilterState()
   const { shippedHost, installedHost, shippedExt, activatedExt } = state
   // **An unreadable version refuses too.** Under `if (shippedVersion)` the whole guard below was
@@ -553,7 +572,7 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
   // Nothing here can distinguish "already off" from "could not ask", and both are fine to continue on.
   restoreExecutableBits(shipped)
   const wasEnforcing = isFilterEnforcing()
-  opts.onProgress?.('disabling')
+  reportProgress(opts, 'disabling')
   const preOff = spawnSync(join(shipped, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--off'], {
     encoding: 'utf8', timeout: OFF_TIMEOUT_MS,
   })
@@ -564,7 +583,7 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
   // never had is a smaller lie than the one this flag exists to stop, and still a wrong diagnosis.
   const preOffTook = wasEnforcing && preOff?.status === 0
 
-  opts.onProgress?.('copying')
+  reportProgress(opts, 'copying')
   const copy = spawnSync('/usr/bin/ditto', [shipped, NET_FILTER_APP], {
     encoding: 'utf8', timeout: COPY_TIMEOUT_MS,
   })
@@ -626,7 +645,7 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
   // **One report for the disable and the activation together**, because they are one sequence to the
   // person waiting: the filter comes out of the path and the extension goes in. Reporting the second
   // `--off` on its own would say `disabling` twice for what reads as a single step.
-  opts.onProgress?.('activating')
+  reportProgress(opts, 'activating')
   const logBeforeOff = hostLogTail()
   const off = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--off'], {
     encoding: 'utf8', timeout: OFF_TIMEOUT_MS,
@@ -666,7 +685,7 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
     case 0: {
       // Only this branch waits. The approval and reboot paths below return with nothing left to
       // watch, so reporting `confirming` there would name a wait that never happens.
-      opts.onProgress?.('confirming')
+      reportProgress(opts, 'confirming')
       return waitForEnforcing(opts.confirmDeadlineMs ?? CONFIRM_DEADLINE_MS, Math.floor(Date.now() / 1000))
         ? { status: 'installed' }
         : { status: 'installed-unconfirmed' }

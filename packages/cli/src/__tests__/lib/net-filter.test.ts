@@ -963,6 +963,22 @@ describe('net filter — saying what the install is waiting on', () => {
     expect(INSTALL_STAGE_MESSAGE.confirming).toMatch(/running/i)
   })
 
+  it('does not let a throwing reporter abandon the install', () => {
+    // **Raised by two independent reviews, neither of which found a reaching path** — both callers
+    // pass `step`, which is a `console.log`, and node's console swallows write errors. Guarded on
+    // cost rather than likelihood: an exception escaping after `disabling` leaves the Mac with its
+    // filter off, no outcome, and no banner. The mutation is deleting the `try` in `reportProgress`,
+    // which turns this into a thrown `reporter exploded` instead of an outcome.
+    freshMac()
+    hostExits(0)
+    expect(installNetFilter({
+      confirmDeadlineMs: 0,
+      onProgress: () => { throw new Error('reporter exploded') },
+    })).toEqual({ status: 'installed-unconfirmed' })
+    // And the install really ran rather than being skipped into a quiet no-op.
+    expect(spawnOrder()).toEqual(['--off', 'ditto', '--off', '--install'])
+  })
+
   it('reports activating even when the step it gates fails, and stops there', () => {
     // **A `failed` path, which nothing else here covers.** The gate `--off` refuses, so `--install`
     // never runs: no activation, no approval prompt, no two-minute wait — yet `activating` has been
