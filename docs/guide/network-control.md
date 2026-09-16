@@ -6,6 +6,16 @@ The button works per simulator or emulator. Other devices running on the same ag
 
 **A request it cannot carry out is refused.** Telling the app it is offline without actually blocking its traffic would leave every request succeeding behind a screen that says otherwise, and offline behaviour checked in that state has not been checked at all. So tapflow applies all of it or none of it, and the button says why.
 
+## What is cut, and what is not
+
+Taking a device offline blocks every connection it **opens from then on**, except over the agent Mac's own loopback. Connections that were already open are cut as well, but only inside the app tapflow launched.
+
+The network filter on the Mac judges new connections only — a connection it has already allowed cannot be taken back. So already-open sockets are cut from inside the app instead, which works only in the app tapflow launched. Anything else keeps using the connections it already has: the simulator's browser, or an app you did not launch through tapflow.
+
+In practice it looks like this: a screen that was already downloading when you pressed the button carries on for a moment, while a screen opened at that same moment fails right away. Both are normal.
+
+**Check with a new request.** Open a screen or pull to refresh so the app sends something new. Judging by watching a request that was already in flight finish makes it look as though offline did not take.
+
 ## Localhost is not cut
 
 A dev server such as Metro reaches the device over the agent Mac's loopback, so it stays connected while the device is offline. You can watch offline behaviour with a debug build still attached.
@@ -58,7 +68,11 @@ systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext
 Deleting `/Applications/TapflowNetFilter.app` on its own does not remove it. macOS keeps running an extension whose container app is gone, and `tapflow doctor ios` reports that state separately.
 
 ::: warning A hybrid app's WebView draws no offline banner
-Screens running inside a WebView are not reached by the offline notification, so no banner appears. This is a known limitation. The WebView's own network requests fail like any other, so confirm offline behaviour on those screens by the failed requests rather than by a banner.
+Screens running inside a WebView are not reached by the offline notification, so no banner appears. This is a known limitation.
+
+**Connections a WebView already had open are not cut either.** Cutting open sockets works only inside the app tapflow launched, and a WebView's networking runs in separate processes that it does not reach. Connections the WebView opens after that fail like any other request.
+
+Confirm offline behaviour on those screens by a **new request** failing, rather than by a banner.
 :::
 
 ::: tip Error codes differ from a real device
