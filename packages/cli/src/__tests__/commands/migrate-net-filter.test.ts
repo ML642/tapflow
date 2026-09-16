@@ -156,11 +156,36 @@ describe('tapflow migrate net-filter — following an approval through', () => {
     await cmdMigrateNetFilter({ ignoreRunningDevices: true })
 
     expect(mockFollow).toHaveBeenCalledTimes(1)
-    const opts = mockFollow.mock.calls[0]?.[1]
+    const call = mockFollow.mock.calls[0]
+    // The flow starts from what the install answered, so its early ways out can hand that back.
+    expect(call?.[0]).toEqual({ status: 'needs-approval', filterLeftDisabled: true })
+    const opts = call?.[2]
     expect(opts?.ignoreRunningDevices).toBe(true)
     expect(opts?.onProgress).toBeTypeOf('function')
     const written = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n')
     expect(written, 'the banner reported the first answer rather than the final one').toContain('NETWORK FILTER INSTALLED')
+  })
+
+  it('does not describe a refusal after the approval as the refusal before an install', async () => {
+    // **Two refusals share one outcome.** Before the install nothing has changed; after an approval the
+    // install has run and the filter is off. "It is not done" would be false here, and the Mac would be
+    // left with no word that its filter is off. Dropping the branch is the mutation.
+    mockInstall.mockReturnValue({ status: 'needs-approval', filterLeftDisabled: true })
+    mockFollow.mockResolvedValue({ status: 'refused-devices-busy', busy: ['simulator iPhone 17'], filterLeftDisabled: true })
+    await expect(cmdMigrateNetFilter()).rejects.toThrow('process.exit')
+    const printed = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n')
+    expect(printed).toContain('The extension is approved')
+    expect(printed).toContain('switched OFF')
+    expect(printed).not.toContain('it is not done')
+  })
+
+  it('keeps the original wording for a refusal before anything was installed', async () => {
+    mockInstall.mockReturnValue({ status: 'refused-devices-busy', busy: ['simulator iPhone 17'] })
+    await expect(cmdMigrateNetFilter()).rejects.toThrow('process.exit')
+    const printed = vi.mocked(console.log).mock.calls.map((c) => String(c[0])).join('\n')
+    expect(printed).toContain('it is not done')
+    expect(printed).not.toContain('switched OFF')
+    expect(mockFollow).not.toHaveBeenCalled()
   })
 
   it('does not offer the approval screen when nothing is waiting for approval', async () => {

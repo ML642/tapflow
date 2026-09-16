@@ -16,7 +16,8 @@ import { createRequire } from 'node:module'
 import {
   installNetFilter, readNetFilterState, extensionBundle, isFilterEnforcing, NET_FILTER_APP,
   INSTALL_STAGE_MESSAGE, type InstallStage,
-  followThroughApproval, APPROVAL_SHEET_URL, APPROVAL_MESSAGE, type ApprovalDeps,
+  followThroughApproval, APPROVAL_SHEET_URL, APPROVAL_MESSAGE, APPROVAL_WAIT_MS,
+  type ApprovalDeps, type NeedsApproval,
 } from '../../lib/net-filter.js'
 import { runDoctorChecks } from '../../lib/doctor.js'
 import { runSetupIos } from '../../lib/setup.js'
@@ -35,8 +36,10 @@ const mockConfirm = vi.mocked(confirm)
 const filterPrompts = () =>
   mockConfirm.mock.calls.filter((c) => /network filter/i.test(String((c[0] as { message?: string })?.message ?? '')))
 
+/** A whole terminal: the approval offer needs stdin to be one as well — see `terminalApprovalDeps`. */
 function setTTY(v: boolean | undefined) {
   Object.defineProperty(process.stdout, 'isTTY', { value: v, configurable: true })
+  Object.defineProperty(process.stdin, 'isTTY', { value: v, configurable: true })
 }
 
 /**
@@ -151,11 +154,15 @@ function machine(opts: {
    *  `systemextensionsctl` has been asked this many times, and as this build's version after. Counted
    *  across the whole test, so every probe before the wait moves the moment — callers say which. */
   approvedAfterLooks?: number
+  /** `booted` shows up only once `systemextensionsctl` has been asked more than this many times — a
+   *  simulator started *during* the approval wait rather than before the command ran. */
+  bootedAfterListLooks?: number
 }) {
   const {
     shipped = SHIPPED, installed = SHIPPED, activated = SHIPPED, activatedState,
     shippedExt = shipped,
     filterRunning = true, booted = [], relayUp = false, heartbeatAgeSeconds = 0, approvedAfterLooks,
+    bootedAfterListLooks,
   } = opts
   mockReadFileSync.mockImplementation((p) => {
     if (String(p) === FILTER_STATE_FILE) {
@@ -184,7 +191,8 @@ function machine(opts: {
       return listing(approved ? shippedExt : activated, activatedState) as never
     }
     if (String(cmd) === '/usr/bin/xcrun') {
-      return JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-0': booted.map((name) => ({ name, state: 'Booted' })) } }) as never
+      const up = bootedAfterListLooks === undefined || listLooks > bootedAfterListLooks ? booted : []
+      return JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-0': up.map((name) => ({ name, state: 'Booted' })) } }) as never
     }
     if (String(cmd) === '/usr/sbin/lsof') {
       // `lsof` exits non-zero when nothing holds the port, and `execFileSync` turns that into a throw.
@@ -1019,7 +1027,14 @@ describe('net filter — following an approval through', () => {
   afterEach(() => { vi.restoreAllMocks() })
 
   const HOST = `${NET_FILTER_APP}/Contents/MacOS/TapflowNetFilter`
-  const STILL_WAITING = { status: 'needs-approval', filterLeftDisabled: true }
+  const LOG = '/tmp/tapflow-netfilter-host.log'
+  /**
+   * What the early ways out must hand back. **A value `installNetFilter` does not produce today** —
+   * it always says the filter was left off — so an answer made up inside the flow cannot pass for it.
+   */
+  const HANDED: NeedsApproval = { status: 'needs-approval', filterLeftDisabled: false }
+  /** After a wait in which nothing turned the filter on: observed off. */
+  const OBSERVED_OFF = { status: 'needs-approval', filterLeftDisabled: true }
 
   /** The host run with no arguments — the configure mode that switches the filter on. */
   const switchOnRuns = () => mockSpawnSync.mock.calls.filter(
@@ -1043,6 +1058,15 @@ describe('net filter — following an approval through', () => {
     return { deps, said, asked }
   }
 
+  /** The switch-on run answers with `result`; every other process succeeds. */
+  function switchOnAnswers(result: { status: number | null; stderr?: string; error?: { code: string; message: string } }) {
+    mockSpawnSync.mockImplementation(((cmd: unknown, args: unknown) => (
+      String(cmd) === HOST && ((args as string[] | undefined) ?? []).length === 0
+        ? { stdout: '', stderr: result.stderr ?? '', status: result.status, error: result.error }
+        : { status: 0, stdout: '', stderr: '' }
+    )) as never)
+  }
+
   // **`approvedAfterLooks: 0` in the refusals below is deliberate.** It makes approval available at
   // once, so deleting the guard under test does not stall quietly — it carries on to switch the filter
   // on, and `confirmDeadlineMs: 0` makes that answer immediately rather than on a 30-second timeout.
@@ -1052,19 +1076,39 @@ describe('net filter — following an approval through', () => {
     // guard: without it a CI log gets a prompt nobody will answer.
     machine({ activated: null, approvedAfterLooks: 0 })
     const { deps, asked } = person({ interactive: false })
-    expect(await followThroughApproval(deps, { confirmDeadlineMs: 0 })).toEqual(STILL_WAITING)
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(HANDED)
     expect(asked).toEqual([])
     expect(openRuns()).toHaveLength(0)
     expect(switchOnRuns()).toHaveLength(0)
   })
 
-  it('leaves the Mac as it was when the offer is declined', async () => {
+  it('leaves the Mac as it was when the offer is declined, and hands back what it was given', async () => {
     machine({ activated: null, approvedAfterLooks: 0 })
     const { deps, asked } = person({ answer: false })
-    expect(await followThroughApproval(deps, { confirmDeadlineMs: 0 })).toEqual(STILL_WAITING)
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(HANDED)
     expect(asked).toEqual([APPROVAL_MESSAGE.prompt])
     expect(openRuns()).toHaveLength(0)
     expect(switchOnRuns()).toHaveLength(0)
+  })
+
+  it('does not offer the screen when there is no version to recognise the approval by', async () => {
+    // `bundleVersion` answers null when `defaults read` times out, so this is reachable. Two mutations:
+    // moving the check after the prompt asks a question the flow cannot follow through on, and dropping
+    // it compares the extension list against null — which reads "nothing activated" as approved.
+    machine({ shippedExt: null, activated: null, approvedAfterLooks: 0 })
+    const { deps, asked } = person()
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(HANDED)
+    expect(asked).toEqual([])
+    expect(openRuns()).toHaveLength(0)
+    expect(switchOnRuns()).toHaveLength(0)
+  })
+
+  it('asks for consent to the switch, not only to the screen', () => {
+    // A yes is carried through to switching the filter on, which drops connections. By the time the
+    // `switching` line prints, System Settings has focus — and over SSH the switch closes the session.
+    // The mutation is taking the warning back out of the question.
+    expect(APPROVAL_MESSAGE.prompt).toMatch(/drop/i)
+    expect(APPROVAL_MESSAGE.prompt).toMatch(/SSH/)
   })
 
   it('opens the measured URL exactly once, and says where it is going before it does', async () => {
@@ -1072,7 +1116,7 @@ describe('net filter — following an approval through', () => {
     // look right land on the wrong screen. The stamp `0|` means the line was on screen before `open`.
     machine({ activated: null, approvedAfterLooks: 0, heartbeatAgeSeconds: -2 })
     const { deps, said } = person()
-    await followThroughApproval(deps, { confirmDeadlineMs: 2_000 })
+    await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 2_000 })
     expect(openRuns().map((c) => c[1])).toEqual([[APPROVAL_SHEET_URL]])
     expect(said[0]).toBe(`0|${APPROVAL_MESSAGE.opening}`)
   })
@@ -1091,20 +1135,26 @@ describe('net filter — following an approval through', () => {
     // the second run #799 exists to remove.
     machine({ activated: null, approvedAfterLooks: 1, heartbeatAgeSeconds: -2 })
     const { deps, said } = person({ waitMs: 5_000 })
-    expect(await followThroughApproval(deps, { confirmDeadlineMs: 2_000 })).toEqual({ status: 'installed' })
+    const stages: string[] = []
+    expect(await followThroughApproval(HANDED, deps, {
+      confirmDeadlineMs: 2_000,
+      onProgress: (s) => stages.push(`${s}@${mockSpawnSync.mock.calls.length}`),
+    })).toEqual({ status: 'installed' })
     expect(switchOnRuns(), 'it asked for another run instead of switching on').toHaveLength(1)
     // **Warned before the switch.** `open` is spawn 1 and the switch is spawn 2, so a warning stamped `2|`
     // arrived after connections had already dropped. #799 records an SSH session closed by this.
     expect(said).toContain(`1|${APPROVAL_MESSAGE.switching}`)
+    // And the wait after it is announced, as the install announces its own — up to thirty silent seconds.
+    expect(stages).toEqual(['confirming@2'])
   })
 
   it('does not take a previously activated extension for the approval', async () => {
     // `installNetFilter` does not refuse an older activated extension, so this state reaches here. The
     // mutation is comparing against null instead of against the shipped version: that reads as approval
     // before anyone touched the switch.
-    machine({ activated: OLDER })
+    machine({ activated: OLDER, filterRunning: false })
     const { deps } = person()
-    expect(await followThroughApproval(deps, { confirmDeadlineMs: 0 })).toEqual(STILL_WAITING)
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(OBSERVED_OFF)
     expect(switchOnRuns()).toHaveLength(0)
   })
 
@@ -1117,23 +1167,40 @@ describe('net filter — following an approval through', () => {
     // failed on its outcome while the look count below was never evaluated. The mutation was caught for
     // a reason this test does not name. With no approval to reach, the spin has to be caught by the
     // assertion that says it spun.
-    machine({ activated: null, approvedAfterLooks: Number.POSITIVE_INFINITY })
+    machine({ activated: null, approvedAfterLooks: Number.POSITIVE_INFINITY, filterRunning: false })
     const { deps } = person({ waitMs: 1_500 })
     const began = Date.now()
-    expect(await followThroughApproval(deps, { confirmDeadlineMs: 0 })).toEqual(STILL_WAITING)
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(OBSERVED_OFF)
     expect(Date.now() - began, 'it answered before the wait was over').toBeGreaterThanOrEqual(1_400)
     const looks = mockExecFileSync.mock.calls.filter((c) => String(c[0]).endsWith('/systemextensionsctl'))
     expect(looks.length, 'it spun instead of sleeping between looks').toBeLessThanOrEqual(4)
     expect(switchOnRuns()).toHaveLength(0)
   })
 
+  it('reports the filter as it finds it after waiting, not as it was left', async () => {
+    // Minutes pass in the wait, and something else — an agent arming a simulator it booted — may have
+    // written the configuration meanwhile. Each exit has its own line to hardcode, so each is asserted.
+    machine({ activated: null, approvedAfterLooks: Number.POSITIVE_INFINITY, filterRunning: true })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }),
+      'the timed-out wait assumed the filter was still off')
+      .toEqual({ status: 'needs-approval', filterLeftDisabled: false })
+
+    vi.resetAllMocks(); hostExits(0)
+    machine({ activated: null, approvedAfterLooks: 0, booted: ['iPhone 17'], filterRunning: true })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }),
+      'the busy refusal assumed the filter was still off')
+      .toEqual({ status: 'refused-devices-busy', busy: ['simulator iPhone 17'], filterLeftDisabled: false })
+  })
+
   it('does not switch on over a device somebody started while it waited', async () => {
-    // The install's own busy check ran before a prompt with no time limit. The mutation is deleting the
-    // second check. Nor is the warning printed for a switch that is not made.
-    machine({ activated: null, approvedAfterLooks: 0, booted: ['iPhone 17'] })
+    // **Started during the wait, not before it.** The simulator appears only after the extension list
+    // has been read once, so moving the check ahead of the wait finds nothing running and switches on —
+    // which is the mutation. With the device present from the start, that move was indistinguishable.
+    // Nor is the warning printed for a switch that is not made.
+    machine({ activated: null, approvedAfterLooks: 0, booted: ['iPhone 17'], bootedAfterListLooks: 0, filterRunning: false })
     const { deps, said } = person()
-    expect(await followThroughApproval(deps, { confirmDeadlineMs: 0 }))
-      .toEqual({ status: 'refused-devices-busy', busy: ['simulator iPhone 17'] })
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 }))
+      .toEqual({ status: 'refused-devices-busy', busy: ['simulator iPhone 17'], filterLeftDisabled: true })
     expect(switchOnRuns()).toHaveLength(0)
     expect(said.some((l) => l.endsWith(APPROVAL_MESSAGE.switching)), 'it warned about a switch it did not make')
       .toBe(false)
@@ -1142,7 +1209,7 @@ describe('net filter — following an approval through', () => {
   it('switches on over running devices when told to', async () => {
     machine({ activated: null, approvedAfterLooks: 0, booted: ['iPhone 17'], heartbeatAgeSeconds: -2 })
     const { deps } = person()
-    expect(await followThroughApproval(deps, { ignoreRunningDevices: true, confirmDeadlineMs: 2_000 }))
+    expect(await followThroughApproval(HANDED, deps, { ignoreRunningDevices: true, confirmDeadlineMs: 2_000 }))
       .toEqual({ status: 'installed' })
     expect(switchOnRuns()).toHaveLength(1)
   })
@@ -1151,22 +1218,89 @@ describe('net filter — following an approval through', () => {
     // The flag is what both commands print "the filter is switched OFF" from; leaving it false would tell
     // someone their network control is merely broken when it is actually disabled.
     machine({ activated: null, approvedAfterLooks: 0 })
-    mockSpawnSync.mockImplementation(((cmd: unknown, args: unknown) => (
-      String(cmd) === HOST && ((args as string[] | undefined) ?? []).length === 0
-        ? { status: 3, stdout: '', stderr: 'save refused' }
-        : { status: 0, stdout: '', stderr: '' }
-    )) as never)
-    const { deps } = person()
-    expect(await followThroughApproval(deps, { confirmDeadlineMs: 0 }))
+    switchOnAnswers({ status: 3, stderr: 'save refused' })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }))
       .toMatchObject({ status: 'failed', code: 3, detail: 'save refused', filterLeftDisabled: true })
+  })
+
+  it('treats any non-zero exit from the switch-on as a failure, and reports that exit', async () => {
+    // A load failure is 2. Testing only 3 left `status === 3` — and a constant `code` — standing.
+    machine({ activated: null, approvedAfterLooks: 0 })
+    switchOnAnswers({ status: 2, stderr: 'load refused' })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }))
+      .toMatchObject({ status: 'failed', code: 2, detail: 'load refused' })
+    expect(switchOnRuns()).toHaveLength(1)
+  })
+
+  it('reports a switch-on that ran out of time as unanswered, and looks at whether it landed', async () => {
+    // The save waits on macOS's content-filter question, so a run that was cut off is most likely a
+    // person still reading it — not a save that failed. And it may have landed after all: here a
+    // provider is pulsing, so the flag must say the filter is not off.
+    machine({ activated: null, approvedAfterLooks: 0, filterRunning: true })
+    switchOnAnswers({ status: null, error: { code: 'ETIMEDOUT', message: 'spawnSync TapflowNetFilter ETIMEDOUT' } })
+    const outcome = await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 })
+    expect(outcome).toMatchObject({ status: 'failed', filterLeftDisabled: false })
+    expect((outcome as { detail: string }).detail).toMatch(/nothing answered/)
+    expect((outcome as { detail: string }).detail).toMatch(/network content/)
+  })
+
+  it('does not explain a failed switch-on with a line the approval run left in the log', async () => {
+    // The host log is shared, and the run that stopped at approval wrote its own last line. A switch-on
+    // that never started writes nothing, so without the snapshot that stale line is what gets reported.
+    machine({ activated: null, approvedAfterLooks: 0 })
+    const stale = 'no approval within 120s — approve the extension in System Settings and run this again'
+    mockReadFileSync.mockImplementation((p) => {
+      if (String(p) === LOG) return stale as never
+      if (String(p) === FILTER_STATE_FILE) return JSON.stringify({ at: Math.floor(Date.now() / 1000), pulseSeconds: 5 }) as never
+      return '' as never
+    })
+    switchOnAnswers({ status: null, error: { code: 'ENOENT', message: 'spawnSync TapflowNetFilter ENOENT' } })
+    const outcome = await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 })
+    expect(outcome).toMatchObject({ status: 'failed', filterLeftDisabled: true })
+    expect((outcome as { detail: string }).detail).not.toContain('no approval')
+    expect((outcome as { detail: string }).detail).toContain('ENOENT')
   })
 
   it('does not call it installed until a filter reports itself running', async () => {
     // A preference save accepted is not a provider enforcing — the same look the install takes on exit 0.
     machine({ activated: null, approvedAfterLooks: 0, filterRunning: false })
     const { deps } = person()
-    expect(await followThroughApproval(deps, { confirmDeadlineMs: 0 })).toEqual({ status: 'installed-unconfirmed' })
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual({ status: 'installed-unconfirmed' })
     expect(switchOnRuns()).toHaveLength(1)
+  })
+
+  it('does not accept a heartbeat from the second the filter was switched on', async () => {
+    // The same exclusive baseline as the install: a pulse from that second could be a provider that was
+    // already there. The mutation is a baseline of 0, which takes any fresh file.
+    machine({ activated: null, approvedAfterLooks: 0, heartbeatAgeSeconds: 0 })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }))
+      .toEqual({ status: 'installed-unconfirmed' })
+  })
+
+  it('waits for the filter to come up rather than answering on the first look', async () => {
+    // A provider takes seconds to apply its settings. The mutation is a deadline of zero, which reports
+    // "nothing is filtering" over a filter that was about to start — and exits 1.
+    machine({ activated: null, approvedAfterLooks: 0, heartbeatAgeSeconds: -2 })
+    let stateLooks = 0
+    mockExistsSync.mockImplementation((p) => {
+      const q = String(p)
+      if (q === FILTER_STATE_FILE) return ++stateLooks > 2
+      return q.startsWith(NET_FILTER_APP) || q.includes('TapflowNetFilter.app')
+    })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 5_000 }))
+      .toEqual({ status: 'installed' })
+    expect(stateLooks, 'it answered on the first look').toBeGreaterThan(2)
+  })
+
+  it('gives the switch-on, and the wait before it, a person\'s time', async () => {
+    // **Floors, not fences.** The save waits on a dialog, so a bound on the scale of a preference save
+    // kills the host while someone reads it; deleting the bound hangs on a wedged run. Neither value is
+    // checked for being exactly right.
+    machine({ activated: null, approvedAfterLooks: 0, heartbeatAgeSeconds: -2 })
+    await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 2_000 })
+    const options = switchOnRuns()[0]?.[2] as { timeout?: number } | undefined
+    expect(options?.timeout, 'the switch-on run has no human-scale deadline').toBeGreaterThanOrEqual(60_000)
+    expect(APPROVAL_WAIT_MS).toBeGreaterThanOrEqual(60_000)
   })
 })
 
@@ -1431,6 +1565,30 @@ describe('setup and migrate share one install', () => {
       const prompts = mockConfirm.mock.calls.map((c) => (c[0] as { message?: string }).message)
       expect(prompts, 'the approval screen was never offered').toContain(APPROVAL_MESSAGE.prompt)
       expect(result).toMatchObject({ ok: true, state: 'created' })
+    })
+  })
+
+  it('does not call an approved install whose switch-on was refused a skip', async () => {
+    // **The setup half of the refusal after approval.** It used to read "Skipped" with `ok: true` — over
+    // a Mac where the install had run and the filter was left off. Dropping the branch is the mutation.
+    await onMacFor(async () => {
+      // Readings of the extension list: setup's probe (1), the install's (2), the wait's first look (3).
+      // Approval and the simulator both arrive on the third, so the install's own busy check saw nothing.
+      machine({
+        installed: null, activated: null, approvedAfterLooks: 2,
+        booted: ['iPhone 17'], bootedAfterListLooks: 2, filterRunning: false,
+      })
+      mockExecSyncForIos()
+      mockSpawnSync.mockImplementation(((_cmd: unknown, args: unknown) => ({
+        status: ((args as string[] | undefined) ?? []).includes('--install') ? 4 : 0, stdout: '', stderr: '',
+      })) as never)
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      vi.spyOn(console, 'log').mockImplementation(() => {})
+      const result = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(result).toMatchObject({ ok: false, warn: true })
+      expect(result?.detail).toMatch(/Approved, but not switched on/)
+      expect(result?.detail).toMatch(/switched OFF/)
     })
   })
 

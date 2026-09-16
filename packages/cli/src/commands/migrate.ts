@@ -62,7 +62,7 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
   // comes back is decided by the switch below exactly as a first answer would be, so the exit code of
   // every outcome is unchanged.
   if (outcome.status === 'needs-approval') {
-    outcome = await followThroughApproval(terminalApprovalDeps(), installOpts)
+    outcome = await followThroughApproval(outcome, terminalApprovalDeps(), installOpts)
   }
   switch (outcome.status) {
     case 'installed':
@@ -130,12 +130,25 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
     case 'refused-devices-busy':
       // Not an error the way a failed install is: nothing is broken, the moment is wrong. Naming what
       // is running is the point — the person at the keyboard may not be the person testing.
+      //
+      // **Two refusals share this outcome and they are different states.** Before the install nothing
+      // has changed. After an approval the install has run and the filter is waiting to be switched on
+      // — `filterLeftDisabled` being present says so — and "it is not done" would be false there.
       banner('error', 'DEVICES ARE IN USE', [
-        'Replacing the network filter interrupts every new connection on this Mac while it happens,',
-        'so it is not done while something is running:',
+        ...(outcome.filterLeftDisabled === undefined ? [
+          'Replacing the network filter interrupts every new connection on this Mac while it happens,',
+          'so it is not done while something is running:',
+        ] : [
+          'The extension is approved, but switching the filter on drops connections this Mac has open,',
+          'so it was not switched on while something is running:',
+        ]),
         ...outcome.busy.map((b) => `  · ${b}`),
         '',
-        'Stop them and run this again, or replace it anyway:',
+        ...(outcome.filterLeftDisabled ? [
+          'The filter is switched OFF until then — your network works, iOS network control does not.',
+          '',
+        ] : []),
+        'Stop them and run this again, or go ahead anyway:',
         '  tapflow migrate net-filter --ignore-running-devices',
       ])
       process.exit(1)
@@ -163,7 +176,9 @@ export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean
       break
     case 'failed':
       banner('error', 'MIGRATION FAILED', [
-        `The filter could not be installed (exit ${outcome.code}).`,
+        // "Did not finish", not "could not be installed": a failure while switching the filter on comes
+        // after the install and the approval both succeeded.
+        `The filter install did not finish (exit ${outcome.code}).`,
         outcome.detail,
         'packages/ios-agent/ios-netfilter/README.md has what each exit code means.',
         // **The state matters more than the failure.** A filter left off is a working Mac with no iOS

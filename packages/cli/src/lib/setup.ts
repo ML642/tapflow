@@ -221,7 +221,7 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
   // Only ever reached in a terminal — the prompt above returns first otherwise — so the offer is always
   // made here. The `interactive` check inside is for the other caller.
   if (outcome.status === 'needs-approval') {
-    outcome = await followThroughApproval(terminalApprovalDeps(), installOpts)
+    outcome = await followThroughApproval(outcome, terminalApprovalDeps(), installOpts)
   }
   switch (outcome.status) {
     case 'installed':
@@ -268,6 +268,16 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
     case 'refused-devices-busy':
       // Setup is not the place to force it: someone running `setup ios` is preparing a Mac, not
       // repairing one, and the devices in the list may be another person's session.
+      if (outcome.filterLeftDisabled !== undefined) {
+        // **After an approval this is not a skip.** The install has run; what was refused is switching
+        // the filter on. A Mac left with it off has no iOS network control, and that is not `ok`.
+        return {
+          label: 'Network filter',
+          ok: !outcome.filterLeftDisabled,
+          warn: true,
+          detail: `Approved, but not switched on — that drops connections this Mac has open, and these are running: ${outcome.busy.join(', ')}.${outcome.filterLeftDisabled ? ' The filter is switched OFF until then.' : ''} Stop them, then: tapflow migrate net-filter`,
+        }
+      }
       return {
         label: 'Network filter',
         ok: true,
@@ -297,8 +307,8 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
         label: 'Network filter',
         ok: false,
         detail: outcome.filterLeftDisabled
-          ? `Could not install it (exit ${outcome.code}): ${outcome.detail}. The filter is switched OFF — your network works, iOS network control does not. Run \`tapflow migrate net-filter\` to turn it back on.`
-          : `Could not install it (exit ${outcome.code}): ${outcome.detail}`,
+          ? `The install did not finish (exit ${outcome.code}): ${outcome.detail}. The filter is switched OFF — your network works, iOS network control does not. Run \`tapflow migrate net-filter\` to turn it back on.`
+          : `The install did not finish (exit ${outcome.code}): ${outcome.detail}`,
       }
   }
 }
