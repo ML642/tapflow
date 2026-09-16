@@ -225,13 +225,13 @@ Go to **System Settings → General → Login Items & Extensions → Network Ext
 
 Approval happens at the Mac. macOS offers no path a browser could click instead.
 
-**If it is not approved within two minutes, the command asks whether to open the approval screen.** It asks only when you ran it in a terminal yourself. Say yes and it opens the screen, waits up to two more minutes for the tapflow entry to be switched on, and then switches the filter on.
+**If it is not approved within two minutes, the command asks whether to open the approval screen.** It asks only when both its input and output are a terminal, so a pipe or a redirect stops it from asking even in one. Say yes and it opens the screen, waits up to two more minutes for the tapflow entry to be switched on, and then switches the filter on.
 
 Switching the filter on can briefly drop connections this Mac already has open, SSH sessions included — if you are connected over SSH, run it at the Mac. If macOS asks whether to allow tapflow to filter network content when it switches on, allow it.
 
 If no screen appears, go there by the path above. The command cannot tell whether the window opened, so it shows the path alongside.
 
-If you declined, ran it somewhere other than a terminal, or did not switch it on within those two extra minutes, the command ends still waiting for approval. Approve it and run the same command once more. That run switches the filter on.
+If you declined, ran it where it cannot ask, or did not switch it on within those two extra minutes, the command ends still waiting for approval. Approve it and run the same command once more. That run switches the filter on.
 
 If a device came into use while it waited — a simulator booted, say — it stops without switching the filter on. It names what it found; stop that and run the command again.
 
@@ -273,7 +273,7 @@ Installing ends with a distinct code per kind of failure.
 | 1 | Activation failed |
 | 2 | Could not read the configuration |
 | 3 | Could not save the configuration |
-| 4 | Not approved within 120 seconds. Run from a terminal, the command asks whether to open the approval screen and keeps waiting. If it is still not switched on after that, or there was no terminal, the command ends waiting for approval: approve it in System Settings and run it again |
+| 4 | Not approved within 120 seconds. With input and output both on a terminal, the command asks whether to open the approval screen and keeps waiting. If it is still not switched on after that, or it could not ask, the command ends waiting for approval: approve it in System Settings and run it again |
 | 5 | The Mac has to restart for this to finish |
 | 6 | The system extension manager gave no answer within 45 seconds |
 | 7 | The running filter did not answer |
