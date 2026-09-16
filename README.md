@@ -133,7 +133,7 @@ Navigate to `http://localhost:4000` and sign in with the account you just create
 | Component | Requirements |
 |-----------|-------------|
 | **Relay server** | Node.js ≥ 22, any OS (Linux/macOS), ~512 MB RAM |
-| **iOS Agent** | macOS, Xcode + iOS Simulator runtime (or run `tapflow setup ios`), Node.js ≥ 22 |
+| **iOS Agent** | macOS 26 or 27, Xcode 26 or 27 + iOS Simulator runtime (or run `tapflow setup ios`), Node.js ≥ 22 |
 | **Android Agent** | macOS, Java + Android SDK with an AVD (or run `tapflow setup android`), Node.js ≥ 22 |
 | **Browser (QA)** | Any modern browser — Chrome, Firefox, Safari, Edge |
 
@@ -153,12 +153,16 @@ What's included:
 - **Touch, swipe & pinch** — real-time input forwarded to the simulator or emulator.
 - **Deeplink toolbar** — open supported deeplinks directly from the QA toolbar.
 - **Keyboard shortcuts** — trigger simulator toolbar actions from the keyboard.
+- **Clipboard sync** — copy and paste between your Mac and the device, in both directions.
+- **Device audio** — the app's sound comes back to the browser tab.
+- **Network control** — take a device off the network and put it back, to test how the app behaves offline. iOS installs a network filter once; Android needs nothing.
 - **App Center** — upload `.app.zip` / `.apk` and track builds by status (Backlog / In Progress / Done / Rejected).
 - **Session recordings** — record and share QA sessions, kept on the relay for ~72 hours, then purged automatically.
 - **Screenshot REST endpoint** — `GET /api/v1/sessions/:sessionId/screenshot` for CI and AI agents.
 - **Mac resource monitoring** — CPU & RAM per agent, to spot overloaded hosts before assigning sessions.
 - **Team management** — invite links, roles (Admin / Developer / QA / Viewer), and Personal Access Tokens.
-- **MCP Server** — `@tapflowio/mcp-server` lets Claude Code and other LLM agents control simulators as native tools.
+- **Flow runner** — `tapflow flow run` replays a YAML flow with condition-based waits and a JUnit report, and calls no LLM at replay time. Experimental.
+- **MCP Server** — `@tapflowio/mcp-server` lets Claude Code and other LLM agents control simulators as native tools. Experimental.
 
 <span id="latency-note"></span>
 > <sup>1</sup> On a real LAN, decode-to-present measures in the low tens of milliseconds (p50 ~11–17 ms with the WASM software decoder; faster with WebCodecs on HTTPS); end-to-end "glass-to-glass" latency adds your network's round trip on top. See the [streaming latency log](contributing/streaming-latency-log.md) for the full measurements, conditions, and known limitations.
