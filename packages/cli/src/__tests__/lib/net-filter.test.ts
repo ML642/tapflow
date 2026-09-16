@@ -836,9 +836,26 @@ describe('net filter — saying what the install is waiting on', () => {
   function traced(code: number) {
     hostExits(code)
     const events: string[] = []
+    /**
+     * **The spawn count alone is blind to the two longest waits here**, which is why every mark
+     * carries three counters. `readNetFilterState` is `execFileSync` (four probes, 10s each) and
+     * `waitForEnforcing` is `Atomics.wait` plus `existsSync`/`readFileSync` — neither moves
+     * `spawnSync`, so `checking` and `confirming` could each be reported *after* the wait they name
+     * and the stamp would not change by one character.
+     */
+    const marks: { stage: InstallStage; spawns: number; reads: number; stats: number }[] = []
     return {
       events,
-      onProgress: (s: InstallStage) => events.push(`${s}@${mockSpawnSync.mock.calls.length}`),
+      marks,
+      onProgress: (s: InstallStage) => {
+        marks.push({
+          stage: s,
+          spawns: mockSpawnSync.mock.calls.length,
+          reads: mockExecFileSync.mock.calls.length,
+          stats: mockExistsSync.mock.calls.length,
+        })
+        events.push(`${s}@${mockSpawnSync.mock.calls.length}`)
+      },
     }
   }
 
@@ -852,7 +869,7 @@ describe('net filter — saying what the install is waiting on', () => {
     // The mutation: move any `onProgress` call below its `spawnSync`. The stage list alone would
     // still be in order; this ordering is what fails.
     freshMac()
-    const { events, onProgress } = traced(0)
+    const { events, marks, onProgress } = traced(0)
     installNetFilter({ confirmDeadlineMs: 0, onProgress })
     // Both sequences, because either alone can be right while they interleave wrongly.
     expect(spawnOrder()).toEqual(['--off', 'ditto', '--off', '--install'])
@@ -863,6 +880,19 @@ describe('net filter — saying what the install is waiting on', () => {
       'activating@2',  // after `ditto`, before the gate `--off` and `--install`
       'confirming@4',  // after both, before `waitForEnforcing`
     ])
+
+    // **The two stages the spawn count cannot speak for.** Order is pinned above; these pin that the
+    // wait each one names had not happened yet. Without them, moving either report below its wait
+    // leaves all 386 tests green — the same defect as moving `copying` below `ditto`, which the
+    // sequence above does catch, only invisible because the wait is not a spawn.
+    expect(marks[0].stage).toBe('checking')
+    expect(marks[0].reads, '`checking` was reported after the probe it names').toBe(0)
+    expect(mockExecFileSync.mock.calls.length, 'the probe never ran, so the mark proves nothing')
+      .toBeGreaterThan(0)
+
+    expect(marks[4].stage).toBe('confirming')
+    expect(mockExistsSync.mock.calls.length, '`confirming` was reported after the wait it names')
+      .toBeGreaterThan(marks[4].stats)
   })
 
   it('says nothing extra, and nothing different, when no callback is given', () => {
@@ -871,12 +901,16 @@ describe('net filter — saying what the install is waiting on', () => {
     freshMac()
     hostExits(0)
     const withoutCb = installNetFilter({ confirmDeadlineMs: 0 })
+    const orderWithout = spawnOrder()
     vi.resetAllMocks()
     freshMac()
     hostExits(0)
     const withCb = installNetFilter({ confirmDeadlineMs: 0, onProgress: () => {} })
     expect(withCb).toEqual(withoutCb)
     expect(withCb).toEqual({ status: 'installed-unconfirmed' })
+    // **Not only the outcome.** A reporter that also changed what the install *did* would leave the
+    // returned object identical and still be a different install.
+    expect(spawnOrder()).toEqual(orderWithout)
   })
 
   it('does not say it is confirming on a path that never waits', () => {
@@ -919,6 +953,37 @@ describe('net filter — saying what the install is waiting on', () => {
     const stages: InstallStage[] = ['checking', 'disabling', 'copying', 'activating', 'confirming']
     for (const s of stages) expect(INSTALL_STAGE_MESSAGE[s].trim(), s).not.toEqual('')
     expect(Object.keys(INSTALL_STAGE_MESSAGE).sort()).toEqual([...stages].sort())
+
+    // **Anchored on the words, not only on the key.** Every other assertion in this file reads a
+    // message *through* the map, so swapping two of its values satisfies all of them while the
+    // install announces a copy as it disables. These read the content instead.
+    expect(INSTALL_STAGE_MESSAGE.copying).toContain(NET_FILTER_APP)
+    expect(INSTALL_STAGE_MESSAGE.checking).toMatch(/check/i)
+    expect(INSTALL_STAGE_MESSAGE.disabling).toMatch(/out of the path/i)
+    expect(INSTALL_STAGE_MESSAGE.confirming).toMatch(/running/i)
+  })
+
+  it('reports activating even when the step it gates fails, and stops there', () => {
+    // **A `failed` path, which nothing else here covers.** The gate `--off` refuses, so `--install`
+    // never runs: no activation, no approval prompt, no two-minute wait — yet `activating` has been
+    // printed. That is deliberate rather than overlooked. The line names the disable-then-activate
+    // pair as one step, and moving it below the disable would bury a 15-second wait under the
+    // `copying` label. What must hold is that nothing further is claimed: no `confirming`.
+    freshMac()
+    const events: InstallStage[] = []
+    mockSpawnSync.mockImplementation(((cmd: unknown, args: unknown) => {
+      if (String(cmd) === '/usr/bin/ditto') return { status: 0, stdout: '', stderr: '' }
+      // The pre-copy disable runs from the package; the gate disable runs from /Applications.
+      const isGateOff = (args as string[] | undefined)?.includes('--off')
+        && String(cmd).startsWith(NET_FILTER_APP)
+      return isGateOff
+        ? { status: 3, stdout: '', stderr: 'save refused' }
+        : { status: 0, stdout: '', stderr: '' }
+    }) as never)
+
+    expect(installNetFilter({ onProgress: (s) => events.push(s) }))
+      .toMatchObject({ status: 'failed', code: 3 })
+    expect(events).toEqual(['checking', 'disabling', 'copying', 'activating'])
   })
 })
 
@@ -1143,6 +1208,25 @@ describe('setup and migrate share one install', () => {
       expect(filterPrompts().length, 'it installed without asking').toBe(1)
       expect(step).toMatchObject({ ok: true, state: 'created' })
       expect(dittoCalls().length).toBe(1)
+    })
+  })
+
+  it('says it is checking before the probe that lets setup skip the install entirely', async () => {
+    // **The common path, and the installer's own report cannot reach it.** A Mac that is already set
+    // up returns from `setUpNetFilter` before `installNetFilter` is ever called — and the probe it
+    // returns on is `systemextensionsctl` plus three `defaults read`, bounded at 10s each. Deleting
+    // the `step(...)` in that branch leaves `tapflow setup ios` silent for the whole wait, which is
+    // the defect this change exists to end. That deletion is the mutation.
+    await onMacFor(async () => {
+      machine({})
+      mockExecSyncForIos()
+      const logged = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const result = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(result, 'the step never ran, so the silence proves nothing').toMatchObject({
+        ok: true, state: 'found',
+      })
+      expect(logged.mock.calls.map((c) => String(c[0])).join('\n'))
+        .toContain(INSTALL_STAGE_MESSAGE.checking)
     })
   })
 

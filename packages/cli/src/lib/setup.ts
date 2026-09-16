@@ -174,9 +174,19 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
   // copy of it" — true when written, and false the moment `installNetFilter` started requiring the
   // filter to be running as well. A Mac left with a disabled filter matches on every version, so the
   // half that was missing is exactly the half that would have sent it to the install that repairs it.
-  if (process.platform === 'darwin'
-      && isNetFilterCurrent(readNetFilterState()) && isFilterEnforcing()) {
-    return { label: 'Network filter', ok: true, state: 'found' }
+  if (process.platform === 'darwin') {
+    // **Reported here as well, because this probe is the one most people wait on.** It is the same
+    // `systemextensionsctl` plus three `defaults read` that `installNetFilter` reports `checking`
+    // for — bounded at 10s each — and on a Mac that is already set up this branch *returns*, so the
+    // installer's own report is never reached and the step sat silent for up to 40 seconds.
+    //
+    // A Mac that needs work prints the line twice, once here and once inside the installer. That is
+    // two probes and therefore two honest reports; the duplicate probe is older than this change and
+    // is not fixed here.
+    step(INSTALL_STAGE_MESSAGE.checking)
+    if (isNetFilterCurrent(readNetFilterState()) && isFilterEnforcing()) {
+      return { label: 'Network filter', ok: true, state: 'found' }
+    }
   }
   if (process.platform === 'darwin') {
     if (!process.stdout.isTTY) {

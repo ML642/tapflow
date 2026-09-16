@@ -111,10 +111,17 @@ describe('tapflow migrate net-filter — saying what it is waiting on', () => {
     // `net-filter.test.ts` calls `installNetFilter` directly, so deleting `onProgress` from *this*
     // call site leaves all of them green. That deletion is the mutation this test exists for.
     mockInstall.mockReturnValue({ status: 'already-current' } as never)
-    cmdMigrateNetFilter()
+    cmdMigrateNetFilter({ ignoreRunningDevices: true })
 
-    const opts = mockInstall.mock.calls[0]?.[0] as { onProgress?: (s: string) => void } | undefined
+    const opts = mockInstall.mock.calls[0]?.[0] as
+      { onProgress?: (s: string) => void; ignoreRunningDevices?: boolean } | undefined
     expect(opts?.onProgress, 'the command installs without reporting anything').toBeTypeOf('function')
+
+    // **The flag still reaches the installer.** Adding the reporter turned `installNetFilter(opts)`
+    // into `installNetFilter({ ...opts, onProgress })`, and dropping that spread would disable
+    // `--ignore-running-devices` silently — the command would refuse with DEVICES ARE IN USE forever,
+    // with every test still green. That deletion is the second mutation this test catches.
+    expect(opts?.ignoreRunningDevices, '--ignore-running-devices no longer reaches the installer').toBe(true)
 
     // **And that the reporter writes.** A callback that accepts a stage and drops it would satisfy
     // the check above while leaving the command exactly as silent as it was — which is the defect,

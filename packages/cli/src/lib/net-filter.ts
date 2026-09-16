@@ -384,6 +384,11 @@ export interface InstallOptions {
    * **Optional because every caller predates it** — two commands and this package's tests. An absent
    * callback leaves the install exactly as silent as it was, which is the old behaviour rather than
    * a broken one.
+   *
+   * **Not guarded against throwing, deliberately.** A callback that threw after `disabling` would
+   * leave the filter off with no outcome and no banner — but both callers pass `step`, which is a
+   * `console.log`, and node does not raise a synchronous error there. No reaching path was found, so
+   * this is the reason written down rather than a `try` around five call sites.
    */
   onProgress?: (stage: InstallStage) => void
   /**
