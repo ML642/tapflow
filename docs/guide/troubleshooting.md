@@ -225,6 +225,16 @@ Go to **System Settings → General → Login Items & Extensions → Network Ext
 
 Approval happens at the Mac. macOS offers no path a browser could click instead.
 
+**If it is not approved within two minutes, the command asks whether to open the approval screen.** It asks only when both its input and output are a terminal, so a pipe or a redirect stops it from asking even in one. Say yes and it opens the screen, waits up to two more minutes for the tapflow entry to be switched on, and then switches the filter on.
+
+Switching the filter on can briefly drop connections this Mac already has open, SSH sessions included — if you are connected over SSH, run it at the Mac. If macOS asks whether to allow tapflow to filter network content when it switches on, allow it.
+
+If no screen appears, go there by the path above. The command cannot tell whether the window opened, so it shows the path alongside.
+
+If you declined, ran it where it cannot ask, or did not switch it on within those two extra minutes, the command ends still waiting for approval. Approve it and run the same command once more. That run switches the filter on.
+
+If a device came into use while it waited — a simulator booted, say — it stops without switching the filter on. It names what it found; stop that and run the command again.
+
 ### 3. When a restart is needed
 
 Replacing an already-installed extension finishes only after the Mac restarts. **Until then the previous version keeps running** — the file on disk is the new one while macOS is still running the old one, so the dashboard goes on saying the Mac is not set up.
@@ -246,11 +256,13 @@ It reports four things separately: whether it is **installed**, whether it is **
 | The extension, with no restart mentioned | `tapflow migrate net-filter` |
 | This Mac is set up for a newer tapflow | Upgrade this checkout instead. Migrate refuses that direction, because replacing a newer filter breaks the agent depending on it |
 
-**If the app is gone but the extension is still running, tapflow refuses to reinstall.** The extension's version says which filter is running, not which app it came from, so nothing can tell whether that Mac was set up by a newer tapflow than yours — and installing over it would replace a working filter someone else may depend on. Reinstall from the tapflow whose version matches, or clear the extension and start again:
+**If the app is gone but the extension is still running, tapflow refuses to reinstall.** The extension's version says which filter is running, not which app it came from, so nothing can tell whether that Mac was set up by a newer tapflow than yours — and installing over it would replace a working filter someone else may depend on. Reinstall from the tapflow whose version matches, or clear the extension and start again. `tapflow doctor ios` and the command that refused both print the steps:
 
-```sh
-systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext
-```
+1. Switch the filter off. The app is gone, so this uses the binary inside the package, and the command prints its exact path.
+2. Delete the extension from the ⋯ button beside TapflowNetFilter in System Settings → General → Login Items & Extensions → Network Extensions. This works with the app already gone from `/Applications`.
+3. Restart the Mac. The removal finishes then.
+
+`systemextensionsctl uninstall` is not an option: macOS refuses it on any Mac with System Integrity Protection (SIP) on.
 
 ### If it still does not work
 
@@ -261,7 +273,7 @@ Installing ends with a distinct code per kind of failure.
 | 1 | Activation failed |
 | 2 | Could not read the configuration |
 | 3 | Could not save the configuration |
-| 4 | Not approved within 120 seconds. Approve it in System Settings and run it again |
+| 4 | Not approved within 120 seconds. With input and output both on a terminal, the command asks whether to open the approval screen and keeps waiting. If it is still not switched on after that, or it could not ask, the command ends waiting for approval: approve it in System Settings and run it again |
 | 5 | The Mac has to restart for this to finish |
 | 6 | The system extension manager gave no answer within 45 seconds |
 | 7 | The running filter did not answer |

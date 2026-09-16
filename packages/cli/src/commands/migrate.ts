@@ -1,6 +1,10 @@
-import { banner, step } from '../lib/print.js'
+import { banner, step, DIM, R } from '../lib/print.js'
 import { migrateDataDir } from '../lib/migrate-data-dir.js'
-import { installNetFilter, INSTALL_STAGE_MESSAGE, CONFIRM_DEADLINE_MS, NET_FILTER_APP } from '../lib/net-filter.js'
+import {
+  installNetFilter, followThroughApproval, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, CONFIRM_DEADLINE_MS,
+  NET_FILTER_APP, removalSteps, type InstallOptions,
+} from '../lib/net-filter.js'
+import { terminalApprovalDeps } from '../lib/approval-prompt.js'
 
 // `tapflow migrate data-dir` — one-shot move of a legacy .tapflow-data/ into the unified .tapflow/data/.
 export function cmdMigrateDataDir(): void {
@@ -49,10 +53,17 @@ export function cmdMigrateDataDir(): void {
  * The install itself is `installNetFilter`, shared with setup — one routine, because two would
  * eventually answer the same question differently.
  */
-export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): void {
+export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): Promise<void> {
   // **Lines rather than a spinner**, and that is forced rather than chosen: `installNetFilter` is
   // synchronous to the bottom, so `setInterval` never fires while it runs. See `InstallStage`.
-  const outcome = installNetFilter({ ...opts, onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) })
+  const installOpts: InstallOptions = { ...opts, onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) }
+  let outcome = installNetFilter(installOpts)
+  // **Finished in the same run when somebody is here to do it (#799).** Async for the prompt alone. What
+  // comes back is decided by the switch below exactly as a first answer would be, so the exit code of
+  // every outcome is unchanged.
+  if (outcome.status === 'needs-approval') {
+    outcome = await followThroughApproval(outcome, terminalApprovalDeps(), installOpts)
+  }
   switch (outcome.status) {
     case 'installed':
       banner('success', 'NETWORK FILTER INSTALLED', [
@@ -88,10 +99,13 @@ export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {
     case 'needs-approval':
       banner('success', 'APPROVAL NEEDED', [
         `Installed to ${NET_FILTER_APP}, and macOS is waiting for you to allow it.`,
-        'System Settings → General → Login Items & Extensions → Network Extensions, and switch tapflow on.',
-        'Then check it took: tapflow doctor ios',
+        `Open ${APPROVAL_PATH} and switch tapflow on.`,
+        // **Run again, not check.** Every way here — no terminal, the offer declined, or no switch
+        // within the wait — leaves the filter off, and the rerun is what turns it on. Pointing at
+        // `doctor` first only sent people to a line telling them to run this.
+        'Then run this again to switch the filter on: tapflow migrate net-filter',
         ...(outcome.filterLeftDisabled ? [
-          'The filter is switched off until you do — your network is unaffected, and iOS network'
+          'The filter stays switched off until then — your network is unaffected, and iOS network'
           + ' control stays unavailable.',
         ] : []),
       ])
@@ -116,12 +130,25 @@ export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {
     case 'refused-devices-busy':
       // Not an error the way a failed install is: nothing is broken, the moment is wrong. Naming what
       // is running is the point — the person at the keyboard may not be the person testing.
+      //
+      // **Two refusals share this outcome and they are different states.** Before the install nothing
+      // has changed. After an approval the install has run and the filter is waiting to be switched on
+      // — `filterLeftDisabled` being present says so — and "it is not done" would be false there.
       banner('error', 'DEVICES ARE IN USE', [
-        'Replacing the network filter interrupts every new connection on this Mac while it happens,',
-        'so it is not done while something is running:',
+        ...(outcome.filterLeftDisabled === undefined ? [
+          'Replacing the network filter interrupts every new connection on this Mac while it happens,',
+          'so it is not done while something is running:',
+        ] : [
+          'The extension is approved, but switching the filter on drops connections this Mac has open,',
+          'so it was not switched on while something is running:',
+        ]),
         ...outcome.busy.map((b) => `  · ${b}`),
         '',
-        'Stop them and run this again, or replace it anyway:',
+        ...(outcome.filterLeftDisabled ? [
+          'The filter is switched OFF until then — your network works, iOS network control does not.',
+          '',
+        ] : []),
+        'Stop them and run this again, or go ahead anyway:',
         '  tapflow migrate net-filter --ignore-running-devices',
       ])
       process.exit(1)
@@ -135,8 +162,11 @@ export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {
         'would replace a working filter somebody else depends on.',
         '',
         'Either reinstall from the tapflow whose version matches, or clear the extension and start over:',
-        '  systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext',
       ])
+      // **Outside the banner, because the banner wraps at 72 columns** and the first step carries a path
+      // into the package that is longer than that. Wrapped, it is two lines nobody can paste.
+      for (const s of removalSteps()) console.log(`${DIM}       ${s}${R}`)
+      console.log()
       process.exit(1)
       break
     case 'refused-downgrade':
@@ -149,7 +179,9 @@ export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {
       break
     case 'failed':
       banner('error', 'MIGRATION FAILED', [
-        `The filter could not be installed (exit ${outcome.code}).`,
+        // "Did not finish", not "could not be installed": a failure while switching the filter on comes
+        // after the install and the approval both succeeded.
+        `The filter install did not finish (exit ${outcome.code}).`,
         outcome.detail,
         'packages/ios-agent/ios-netfilter/README.md has what each exit code means.',
         // **The state matters more than the failure.** A filter left off is a working Mac with no iOS

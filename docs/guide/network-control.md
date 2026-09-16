@@ -59,11 +59,16 @@ spctl -a -vv /Applications/TapflowNetFilter.app
 
 What they do **not** prove is that this binary was built from the Swift committed to the repository. The app is built on a maintainer's Mac and committed, and the signing key deliberately does not live in CI, because otherwise anyone who can push a tag could sign a network filter. The price of that choice is a build nobody can reproduce. To check the source-to-binary link yourself, read the sources and build it: that needs a paid Apple Developer account.
 
-**Switching it off and removing it are different things.** System Settings → General → Login Items & Extensions → Network Extensions turns it off and leaves it installed. To remove it:
+**Switching it off and removing it are different things.** System Settings → General → Login Items & Extensions → Network Extensions turns it off and leaves it installed. To remove it, first stop tapflow on this Mac (`tapflow start`, `tapflow agent start`) — a running iOS agent switches the filter back on. Then switch the filter off and delete the app:
 
 ```sh
-systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext
+/Applications/TapflowNetFilter.app/Contents/MacOS/TapflowNetFilter --off
+rm -rf /Applications/TapflowNetFilter.app
 ```
+
+Last, delete the extension from the ⋯ button beside TapflowNetFilter on that same screen, and restart the Mac. It stays in that list after the app is gone, so it can still be deleted there. The removal finishes at the restart; until then `systemextensionsctl list` shows it as `terminated waiting to uninstall on reboot`. The filter goes off first because deleting one that is on can block the Mac's new connections.
+
+`systemextensionsctl uninstall` is not an option. macOS refuses it on any Mac with System Integrity Protection (SIP) on.
 
 Deleting `/Applications/TapflowNetFilter.app` on its own does not remove it. macOS keeps running an extension whose container app is gone, and `tapflow doctor ios` reports that state separately.
 

@@ -1,5 +1,9 @@
 import { execSync, spawnSync } from 'node:child_process'
-import { installNetFilter, INSTALL_STAGE_MESSAGE, isFilterEnforcing, isNetFilterCurrent, readNetFilterState, CONFIRM_DEADLINE_MS, NET_FILTER_APP } from './net-filter.js'
+import {
+  installNetFilter, followThroughApproval, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, isFilterEnforcing,
+  isNetFilterCurrent, readNetFilterState, removalSteps, CONFIRM_DEADLINE_MS, NET_FILTER_APP,
+  type InstallOptions,
+} from './net-filter.js'
 import { existsSync, readFileSync, appendFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +11,7 @@ import { confirm, text, isCancel } from '@clack/prompts'
 import { requestAudioPermission, isAudioSupported } from '@tapflowio/ios-agent'
 import { resolveAdb, type DoctorCheck } from './doctor.js'
 import { step } from './print.js'
+import { terminalApprovalDeps } from './approval-prompt.js'
 
 // SetupStepResult = DoctorCheck + optional state (found/created/repaired); ok is untouched so doctor is unaffected.
 export type SetupStepState = 'found' | 'created' | 'repaired'
@@ -154,10 +159,11 @@ export async function runSetupIos(): Promise<SetupStepResult[]> {
  * people — this one for a first run, that one for an install that predates the feature — and a second
  * copy of the install logic is how those two answers drift apart. Everything below is presentation.
  *
- * Approval and reboot land as **pending**, so setup ends with `SETUP INCOMPLETE` and names them. That
- * is correct rather than unfortunate: until the extension is approved, iOS network control does not
- * work. It is also rare — the host binary waits two minutes for the approval, so the common path here
- * is a plain success.
+ * An approval nobody gives, and a reboot, land as **pending**, so setup ends with `SETUP INCOMPLETE`
+ * and names them. That is correct rather than unfortunate: until the extension is approved, iOS
+ * network control does not work. It is also rare — the host binary waits two minutes for the
+ * approval, and past that `followThroughApproval` offers the approval screen and finishes the install
+ * once the switch is on, so the common path here is a plain success.
  *
  * **Asked for, like every other install in this file.** Written synchronously, this was the one step
  * that skipped the `isTTY` + `confirm()` its siblings all use — and it is the step that installs a
@@ -211,7 +217,13 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
   }
   // Printed as the install runs, ahead of the results list this runner prints when every step is
   // done — the same place the audio step already writes from.
-  const outcome = installNetFilter({ onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) })
+  const installOpts: InstallOptions = { onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) }
+  let outcome = installNetFilter(installOpts)
+  // Reached only past the prompt above, so stdout is a terminal. The `interactive` check inside still
+  // matters here: it reads stdin as well, which that prompt's guard does not.
+  if (outcome.status === 'needs-approval') {
+    outcome = await followThroughApproval(outcome, terminalApprovalDeps(), installOpts)
+  }
   switch (outcome.status) {
     case 'installed':
       return { label: 'Network filter', ok: true, state: 'created' }
@@ -244,7 +256,7 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
         label: 'Network filter',
         ok: false,
         warn: true,
-        detail: `Left alone — extension ${outcome.activated} is running but /Applications/TapflowNetFilter.app is gone, so tapflow cannot tell whether this Mac's filter is newer than this one. Reinstall from the tapflow whose version matches, or clear it: systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext`,
+        detail: `Left alone — extension ${outcome.activated} is running but /Applications/TapflowNetFilter.app is gone, so tapflow cannot tell whether this Mac's filter is newer than this one. Reinstall from the tapflow whose version matches, or clear it: ${removalSteps().join('; ')}.`,
       }
     case 'refused-downgrade':
       // Not a failure of this machine: it is set up for a newer tapflow than this one.
@@ -257,6 +269,16 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
     case 'refused-devices-busy':
       // Setup is not the place to force it: someone running `setup ios` is preparing a Mac, not
       // repairing one, and the devices in the list may be another person's session.
+      if (outcome.filterLeftDisabled !== undefined) {
+        // **After an approval this is not a skip.** The install has run; what was refused is switching
+        // the filter on. A Mac left with it off has no iOS network control, and that is not `ok`.
+        return {
+          label: 'Network filter',
+          ok: !outcome.filterLeftDisabled,
+          warn: true,
+          detail: `Approved, but not switched on — that drops connections this Mac has open, and these are running: ${outcome.busy.join(', ')}.${outcome.filterLeftDisabled ? ' The filter is switched OFF until then.' : ''} Stop them, then: tapflow migrate net-filter`,
+        }
+      }
       return {
         label: 'Network filter',
         ok: true,
@@ -268,9 +290,11 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
         label: 'Network filter',
         ok: false,
         warn: true,
+        // The same instruction as `migrate`'s banner: whatever brought it here — the offer declined or
+        // no switch within the wait — the filter is off, and a run after approving is what turns it on.
         detail: outcome.filterLeftDisabled
-          ? 'Installed, waiting for approval — and the filter is switched off until you give it. Open System Settings → General → Login Items & Extensions → Network Extensions and switch tapflow on.'
-          : 'Installed, waiting for approval. Open System Settings → General → Login Items & Extensions → Network Extensions and switch tapflow on.',
+          ? `Installed, waiting for approval — and the filter is switched off until then. Open ${APPROVAL_PATH}, switch tapflow on, then run \`tapflow migrate net-filter\` to switch the filter on.`
+          : `Installed, waiting for approval. Open ${APPROVAL_PATH}, switch tapflow on, then run \`tapflow migrate net-filter\`.`,
       }
     case 'needs-reboot':
       return {
@@ -284,8 +308,8 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
         label: 'Network filter',
         ok: false,
         detail: outcome.filterLeftDisabled
-          ? `Could not install it (exit ${outcome.code}): ${outcome.detail}. The filter is switched OFF — your network works, iOS network control does not. Run \`tapflow migrate net-filter\` to turn it back on.`
-          : `Could not install it (exit ${outcome.code}): ${outcome.detail}`,
+          ? `The install did not finish (exit ${outcome.code}): ${outcome.detail}. The filter is switched OFF — your network works, iOS network control does not. Run \`tapflow migrate net-filter\` to turn it back on.`
+          : `The install did not finish (exit ${outcome.code}): ${outcome.detail}`,
       }
   }
 }
