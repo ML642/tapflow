@@ -1,6 +1,6 @@
 import { execSync, spawnSync } from 'node:child_process'
 import {
-  installNetFilter, followThroughApproval, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, isFilterEnforcing,
+  installNetFilter, followThroughApproval, offerApprovalUpFront, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, isFilterEnforcing,
   isNetFilterCurrent, readNetFilterState, removalSteps, CONFIRM_DEADLINE_MS, NET_FILTER_APP,
   type InstallOptions,
 } from './net-filter.js'
@@ -217,12 +217,19 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
   }
   // Printed as the install runs, ahead of the results list this runner prints when every step is
   // done — the same place the audio step already writes from.
-  const installOpts: InstallOptions = { onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) }
+  //
+  // Reached only past the prompt above, so stdout is a terminal. The `interactive` check inside the
+  // approval step still matters here: it reads stdin as well, which that prompt's guard does not.
+  // A second question rather than a longer first one: the first is whether to install at all, this one
+  // is whether to put a window on the screen and what switching the filter on costs.
+  const deps = terminalApprovalDeps()
+  const offer = await offerApprovalUpFront(deps)
+  const installOpts: InstallOptions = {
+    onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]), openApprovalSheet: offer === 'accepted',
+  }
   let outcome = installNetFilter(installOpts)
-  // Reached only past the prompt above, so stdout is a terminal. The `interactive` check inside still
-  // matters here: it reads stdin as well, which that prompt's guard does not.
   if (outcome.status === 'needs-approval') {
-    outcome = await followThroughApproval(outcome, terminalApprovalDeps(), installOpts)
+    outcome = await followThroughApproval(outcome, deps, installOpts, offer)
   }
   switch (outcome.status) {
     case 'installed':

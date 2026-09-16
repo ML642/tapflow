@@ -86,9 +86,9 @@ Runs in one pass, asking for consent before each install (interactive terminals 
 - **Android**: installs a JDK, builds a self-contained SDK at `~/Library/Android/sdk` (command-line tools, platform-tools, emulator, system image — no Android Studio GUI), and creates a set of AVDs across form factors.
 
 On macOS, `setup ios` also installs the network filter that iOS network control needs — it asks
-first, like every other install here. If macOS's approval does not come in time, it asks whether to
-open the approval screen and, if you say yes, waits for it to be switched on and finishes the
-install. If you decline the install, or the Mac was set up before the filter shipped,
+first, like every other install here. When the Mac has no approved extension yet, it also asks whether
+to open the approval screen when macOS asks. An approval that takes longer than two minutes still
+finishes the install: it waits for the switch. If you decline the install, or the Mac was set up before the filter shipped,
 [`tapflow migrate net-filter`](#tapflow-migrate-net-filter) installs it on its own.
 
 Installing it ends with a wait of up to thirty seconds for the filter to report itself running, so
@@ -377,24 +377,35 @@ macOS to activate it. Approving it is a step you take at that Mac, in **System S
 Login Items & Extensions → Network Extensions**; macOS offers no command-line equivalent, so the
 command tells you when it is waiting on you.
 
-**A late approval still finishes in the same run.** The install waits up to two minutes for approval.
-If none has come and the command is running in an interactive terminal, it asks whether to open the
-approval screen. The question also says that switching the filter on can drop connections this Mac
-already has open, SSH sessions included. Say yes and it opens the screen and waits up to two more
-minutes for the tapflow entry to be switched on. If it is, the command switches the filter on and
-confirms it is running. If macOS asks whether to allow tapflow to filter network content at that point, allow it.
+**It offers the approval screen before installing, and opens it during the wait.** When no tapflow
+extension is `[activated enabled]`, macOS is going to ask, so in an interactive terminal the command
+asks first whether to open the approval screen when it does. The question also says that switching
+the filter on can drop connections this Mac already has open, SSH sessions included. Say yes and the
+screen opens as soon as `systemextensionsctl list` shows the request `waiting for user`. macOS does
+not show its own prompt again for a request already waiting, so on a rerun this is the only pointer
+there is. The device check runs after this question.
+
+**A late approval still finishes in the same run.** The install waits up to two minutes for approval
+and ends there if the entry is switched on in time. Otherwise the command waits up to two more
+minutes, and if the entry is switched on then, it switches the filter on and confirms it is running.
+If it did not ask up front, because macOS was not expected to ask (replacing an approved extension,
+for instance), it asks at this point. If macOS asks whether to allow tapflow to filter network
+content when the filter goes on, allow it.
 
 **It never says the screen opened.** The command has no way to know whether a window appeared, so it
 shows the path alongside. If nothing appears, go there by that path.
 
-**It checks for devices again just before switching on**, because someone may have booted a
-simulator during the wait. If it finds one, it stops without switching the filter on and says so if
-the filter is left off. With `--ignore-running-devices` it does not check again.
+**When the command switches the filter on itself, it checks for devices again first**, because
+someone may have booted a simulator during the extra wait. If it finds one, it stops without
+switching the filter on and says so if the filter is left off. With `--ignore-running-devices` it
+does not check again. An approval within the first two minutes lets the extension switch the filter
+on by itself, so on that path the only device check is the one when the install starts.
 
 Outside an interactive terminal it does not ask; it counts as interactive only when stdin and
-stdout are both terminals. There, when you decline, and when the entry is not switched on within
-those two minutes, it ends waiting for approval and tells you to approve the extension and run the
-command again. That run switches the filter on.
+stdout are both terminals. There, and when you decline, it ends waiting for approval unless you
+approve it yourself within the first two minutes, and a declined offer is not repeated. The same
+happens when the entry is not switched on within the extra two minutes. It then tells you to approve
+the extension and run the command again. That run switches the filter on.
 
 It **refuses to replace a filter newer than the one it carries**. `/Applications` holds one copy for
 the whole Mac while each install judges it by its own dependencies, so an older checkout would

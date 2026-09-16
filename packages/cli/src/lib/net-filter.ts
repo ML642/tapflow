@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -348,11 +348,15 @@ function relayIsServing(): boolean {
  * approval warning is front-loaded into `activating` instead. Announcing it on the way out would
  * describe a wait that is already over.
  *
+ * `activating-with-sheet` is the same step when the person has already accepted the approval screen
+ * up front (`offerApprovalUpFront`), so the line says the screen is coming rather than where to go.
+ *
  * `checking` covers `readNetFilterState`, which is not free: `systemextensionsctl list` plus three
  * `defaults read`, each bounded at `PROBE_TIMEOUT_MS`. On a wedged Mac that is 40 seconds before
  * anything else here has run.
  */
-export type InstallStage = 'checking' | 'disabling' | 'copying' | 'activating' | 'confirming'
+export type InstallStage =
+  'checking' | 'disabling' | 'copying' | 'activating' | 'activating-with-sheet' | 'confirming'
 
 /**
  * Where the approval lives, in words.
@@ -428,9 +432,15 @@ export const INSTALL_STAGE_MESSAGE: Record<InstallStage, string> = {
   checking: 'Checking what this Mac already has…',
   disabling: 'Taking the current filter out of the path…',
   copying: `Copying the filter to ${NET_FILTER_APP}…`,
+  // **Names the button, because the dialog's default is the wrong one.** macOS 27 asks with OK
+  // highlighted and Open System Settings beside it, and OK only dismisses the dialog: the extension
+  // stays unapproved and nothing on screen says so (measured 2026-09-17).
   activating:
-    'Activating the system extension. macOS may ask you to approve it, and this waits up to two'
-    + ` minutes for that — approve it in ${APPROVAL_PATH}.`,
+    'Activating the system extension. If macOS asks, choose Open System Settings (not OK) and switch'
+    + ` TapflowNetFilter on in ${APPROVAL_PATH}. Waiting up to two minutes.`,
+  'activating-with-sheet':
+    'Activating the system extension. The approval screen opens once macOS asks: switch TapflowNetFilter'
+    + ` on there, or go to ${APPROVAL_PATH} if it does not appear. Waiting up to two minutes.`,
   confirming: 'Waiting for the filter to report itself running…',
 }
 
@@ -461,6 +471,13 @@ export interface InstallOptions {
    * and answers, which is the same code path a slow provider takes on its last poll.
    */
   confirmDeadlineMs?: number
+  /**
+   * Open the approval sheet as soon as macOS starts waiting for it, while the host waits.
+   *
+   * Only for someone who said yes to `offerApprovalUpFront`: it puts a window on the Mac's screen, and
+   * the switch it leads to drops connections.
+   */
+  openApprovalSheet?: boolean
 }
 
 export type InstallOutcome =
@@ -708,7 +725,7 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
   // **One report for the disable and the activation together**, because they are one sequence to the
   // person waiting: the filter comes out of the path and the extension goes in. Reporting the second
   // `--off` on its own would say `disabling` twice for what reads as a single step.
-  reportProgress(opts, 'activating')
+  reportProgress(opts, opts.openApprovalSheet ? 'activating-with-sheet' : 'activating')
   const logBeforeOff = hostLogTail()
   const off = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--off'], {
     encoding: 'utf8', timeout: OFF_TIMEOUT_MS,
@@ -728,6 +745,8 @@ export function installNetFilter(opts: InstallOptions = {}): InstallOutcome {
     }
   }
 
+  // After every refusal and the gate disable, so nothing opens for an install that did not happen.
+  if (opts.openApprovalSheet) openApprovalSheetWhenAsked()
   const run = spawnSync(join(NET_FILTER_APP, 'Contents', 'MacOS', 'TapflowNetFilter'), ['--install'], {
     encoding: 'utf8', timeout: INSTALL_TIMEOUT_MS,
   })
@@ -842,6 +861,9 @@ const SWITCH_ON_TIMEOUT_MS = APPROVAL_WAIT_MS
  * have printed anything after it.
  */
 export const APPROVAL_MESSAGE = {
+  upfront: 'macOS will ask you to allow tapflow\'s network extension. Open the approval screen for you when'
+    + ' it does? Once you switch it on there, tapflow turns the filter on, and connections this Mac already'
+    + ' has open may drop for a moment — SSH sessions included.',
   prompt: 'macOS is waiting for you to allow tapflow\'s network extension. Open the approval screen?'
     + ' Once you switch it on there, tapflow turns the filter on, and connections this Mac already has'
     + ' open may drop for a moment — SSH sessions included.',
@@ -874,6 +896,34 @@ export interface ApprovalDeps {
 /** The one outcome `followThroughApproval` starts from. */
 export type NeedsApproval = Extract<InstallOutcome, { status: 'needs-approval' }>
 
+/** What `offerApprovalUpFront` got, which decides whether `followThroughApproval` asks again. */
+export type ApprovalOffer = 'accepted' | 'declined' | 'not-asked'
+
+/**
+ * Ask **before** installing whether to open the approval screen when macOS asks for it.
+ *
+ * **Why before, when `followThroughApproval` already offers it.** That offer comes only after the host
+ * has waited out its 120 seconds, and a blocking `spawnSync` cannot act sooner. Measured on macOS 27
+ * (2026-09-17), those two minutes are where people get lost: the dialog's default button is OK, which
+ * dismisses it and leaves the extension unapproved, and a rerun shows no dialog at all because macOS
+ * does not ask twice about a request already waiting. Both left someone watching one line for two
+ * minutes, and pressing ^C.
+ *
+ * **Predicted rather than detected.** No tapflow extension `[activated enabled]` means macOS will ask:
+ * a first install, a rerun over a request still waiting, and a reinstall after a removal all read that
+ * way. A replace by the same team is not asked about, so an activated extension is not offered here
+ * and keeps the offer that comes after the wait. A wrong prediction — a Mac whose MDM pre-approves —
+ * costs one question, and the sheet then never opens because nothing waits.
+ *
+ * Asked before the install's own checks run, so its device check still sees a simulator somebody
+ * started while this question was on screen.
+ */
+export async function offerApprovalUpFront(deps: ApprovalDeps): Promise<ApprovalOffer> {
+  if (process.platform !== 'darwin' || !deps.interactive) return 'not-asked'
+  if (!shippedAppPath() || activatedVersion() !== null) return 'not-asked'
+  return (await deps.confirm(APPROVAL_MESSAGE.upfront)) ? 'accepted' : 'declined'
+}
+
 /**
  * Take an install that stopped at approval the rest of the way, in the same run (#799).
  *
@@ -888,14 +938,18 @@ export type NeedsApproval = Extract<InstallOutcome, { status: 'needs-approval' }
  * version to recognise the approval by, or the offer declined. Nothing has changed since
  * `installNetFilter` decided it, so there is nothing newer to say.
  *
+ * **An answer already given up front is not asked for again** (`offerApprovalUpFront`). A yes goes
+ * straight to the sheet; a no returns the outcome it was handed, since the person has already said
+ * they will approve it their own way.
+ *
  * **Ways out after the wait report what they observe instead.** Minutes have passed, and something
  * else may have written the filter configuration meanwhile — a tapflow agent arming a simulator it
  * booted, for one — so "still switched off" is no longer a thing to assume.
  */
 export async function followThroughApproval(
-  handed: NeedsApproval, deps: ApprovalDeps, opts: InstallOptions = {},
+  handed: NeedsApproval, deps: ApprovalDeps, opts: InstallOptions = {}, offer: ApprovalOffer = 'not-asked',
 ): Promise<InstallOutcome> {
-  if (!deps.interactive) return handed
+  if (!deps.interactive || offer === 'declined') return handed
 
   // **Read before asking, not after.** Without a version there is nothing to recognise the approval by,
   // and offering a screen the command cannot then follow through on is worse than not offering it. Not
@@ -904,7 +958,7 @@ export async function followThroughApproval(
   const shippedExt = shipped ? bundleVersion(extensionBundle(shipped)) : null
   if (!shippedExt) return handed
 
-  if (!(await deps.confirm(APPROVAL_MESSAGE.prompt))) return handed
+  if (offer === 'not-asked' && !(await deps.confirm(APPROVAL_MESSAGE.prompt))) return handed
 
   // Said first, so the line is on screen before a window takes focus.
   deps.say(APPROVAL_MESSAGE.opening)
@@ -940,6 +994,53 @@ export async function followThroughApproval(
  */
 function openApprovalSheet(): void {
   spawnSync('/usr/bin/open', [APPROVAL_SHEET_URL], { stdio: 'ignore', timeout: PROBE_TIMEOUT_MS })
+}
+
+/**
+ * Opens the sheet once `$2` shows as waiting for the user in `$1 list`, then stops; gives up after
+ * `$5` looks `$6` seconds apart. `$3 $4` is the open.
+ *
+ * Everything arrives as a positional parameter, so no value is ever parsed as shell. The commands are
+ * parameters too, which is what lets a test run this very script against stand-ins.
+ */
+export const SHEET_OPENER_SCRIPT =
+  'i=0; while [ "$i" -lt "$5" ]; do '
+  + 'if "$1" list 2>/dev/null | grep -F "$2" | grep -q "waiting for user"; then exec "$3" "$4"; fi; '
+  + 'i=$((i+1)); sleep "$6"; done'
+
+/**
+ * Looks and spacing for the opener: 45 seconds, the host's own bound for `sysextd` to answer at all
+ * (exit 6). A request that has not reached "waiting" by then is not going to.
+ */
+export const SHEET_OPENER_LOOKS = 90
+export const SHEET_OPENER_INTERVAL_S = '0.5'
+
+/**
+ * Open the approval sheet when macOS starts waiting, from a process that outlives nothing it needs.
+ *
+ * **A separate process because this one is about to block.** `--install` runs under `spawnSync` for up
+ * to three minutes and nothing on this event loop moves meanwhile, so the only thing that can act
+ * during the host's approval wait is something already running. Detached and unreferenced, and bounded
+ * by its own loop, so it neither holds the command open nor lingers.
+ *
+ * **Waits for the request rather than opening at once.** Whether the sheet lists an entry that
+ * appears after it opened is not measured; opening after `waiting for user` shows is the order that
+ * was (#806). A rerun over a request already waiting opens on the first look.
+ *
+ * Best effort: when it cannot start, the offer after the host's wait still opens the sheet.
+ */
+function openApprovalSheetWhenAsked(): void {
+  try {
+    const child = spawn('/bin/sh', [
+      '-c', SHEET_OPENER_SCRIPT, 'tapflow-sheet-opener',
+      '/usr/bin/systemextensionsctl', EXT_BUNDLE_ID, '/usr/bin/open', APPROVAL_SHEET_URL,
+      String(SHEET_OPENER_LOOKS), SHEET_OPENER_INTERVAL_S,
+    ], { detached: true, stdio: 'ignore' })
+    child.on('error', () => {})
+    child.unref()
+  } catch {
+    // Nothing to report: the wait after this is unchanged, and so is the offer at its end.
+  }
 }
 
 /**

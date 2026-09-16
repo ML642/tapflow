@@ -1,7 +1,7 @@
 import { banner, step, DIM, R } from '../lib/print.js'
 import { migrateDataDir } from '../lib/migrate-data-dir.js'
 import {
-  installNetFilter, followThroughApproval, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, CONFIRM_DEADLINE_MS,
+  installNetFilter, followThroughApproval, offerApprovalUpFront, APPROVAL_PATH, INSTALL_STAGE_MESSAGE, CONFIRM_DEADLINE_MS,
   NET_FILTER_APP, removalSteps, type InstallOptions,
 } from '../lib/net-filter.js'
 import { terminalApprovalDeps } from '../lib/approval-prompt.js'
@@ -56,13 +56,20 @@ export function cmdMigrateDataDir(): void {
 export async function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): Promise<void> {
   // **Lines rather than a spinner**, and that is forced rather than chosen: `installNetFilter` is
   // synchronous to the bottom, so `setInterval` never fires while it runs. See `InstallStage`.
-  const installOpts: InstallOptions = { ...opts, onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) }
+  // **Asked before anything changes, when macOS is going to ask too (#799).** The answer opens the
+  // approval screen during the host's wait instead of after it, and carries into the follow-through so
+  // nobody is asked twice.
+  const deps = terminalApprovalDeps()
+  const offer = await offerApprovalUpFront(deps)
+  const installOpts: InstallOptions = {
+    ...opts, onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]), openApprovalSheet: offer === 'accepted',
+  }
   let outcome = installNetFilter(installOpts)
   // **Finished in the same run when somebody is here to do it (#799).** Async for the prompt alone. What
   // comes back is decided by the switch below exactly as a first answer would be, so the exit code of
   // every outcome is unchanged.
   if (outcome.status === 'needs-approval') {
-    outcome = await followThroughApproval(outcome, terminalApprovalDeps(), installOpts)
+    outcome = await followThroughApproval(outcome, deps, installOpts, offer)
   }
   switch (outcome.status) {
     case 'installed':
