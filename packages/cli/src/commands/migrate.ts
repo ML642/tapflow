@@ -1,6 +1,6 @@
-import { banner } from '../lib/print.js'
+import { banner, step } from '../lib/print.js'
 import { migrateDataDir } from '../lib/migrate-data-dir.js'
-import { installNetFilter, CONFIRM_DEADLINE_MS, NET_FILTER_APP } from '../lib/net-filter.js'
+import { installNetFilter, INSTALL_STAGE_MESSAGE, CONFIRM_DEADLINE_MS, NET_FILTER_APP } from '../lib/net-filter.js'
 
 // `tapflow migrate data-dir` — one-shot move of a legacy .tapflow-data/ into the unified .tapflow/data/.
 export function cmdMigrateDataDir(): void {
@@ -50,7 +50,9 @@ export function cmdMigrateDataDir(): void {
  * eventually answer the same question differently.
  */
 export function cmdMigrateNetFilter(opts: { ignoreRunningDevices?: boolean } = {}): void {
-  const outcome = installNetFilter(opts)
+  // **Lines rather than a spinner**, and that is forced rather than chosen: `installNetFilter` is
+  // synchronous to the bottom, so `setInterval` never fires while it runs. See `InstallStage`.
+  const outcome = installNetFilter({ ...opts, onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) })
   switch (outcome.status) {
     case 'installed':
       banner('success', 'NETWORK FILTER INSTALLED', [
