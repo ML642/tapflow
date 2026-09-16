@@ -229,7 +229,7 @@ Approval happens at the Mac. macOS offers no path a browser could click instead.
 
 It asks only when both its input and output are a terminal, so a pipe or a redirect stops it from asking even in one.
 
-**Missing the first two minutes is not the end of it.** The install waits up to two minutes for approval. If the entry is not switched on by then, the command waits up to two more minutes and then switches the filter on. If it did not ask up front, because macOS was not expected to ask (replacing an approved extension, for instance), it asks at this point whether to open the screen.
+**Missing the first two minutes is not the end of it.** The install waits up to two minutes for approval. If the entry is not switched on by then, and the command can ask and you did not decline its offer, it waits up to two more minutes and switches the filter on once the entry is on. If it did not ask up front, because macOS was not expected to ask (replacing an approved extension, for instance), it asks at this point whether to open the screen.
 
 Switching the filter on can briefly drop connections this Mac already has open, SSH sessions included — if you are connected over SSH, run it at the Mac. If macOS asks whether to allow tapflow to filter network content when it switches on, allow it.
 
