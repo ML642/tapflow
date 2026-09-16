@@ -218,8 +218,8 @@ async function setUpNetFilter(): Promise<SetupStepResult> {
   // done — the same place the audio step already writes from.
   const installOpts: InstallOptions = { onProgress: (s) => step(INSTALL_STAGE_MESSAGE[s]) }
   let outcome = installNetFilter(installOpts)
-  // Only ever reached in a terminal — the prompt above returns first otherwise — so the offer is always
-  // made here. The `interactive` check inside is for the other caller.
+  // Reached only past the prompt above, so stdout is a terminal. The `interactive` check inside still
+  // matters here: it reads stdin as well, which that prompt's guard does not.
   if (outcome.status === 'needs-approval') {
     outcome = await followThroughApproval(outcome, terminalApprovalDeps(), installOpts)
   }
