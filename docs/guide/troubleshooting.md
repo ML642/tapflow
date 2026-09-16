@@ -225,6 +225,16 @@ Go to **System Settings → General → Login Items & Extensions → Network Ext
 
 Approval happens at the Mac. macOS offers no path a browser could click instead.
 
+**If it is not approved within two minutes, the command asks whether to open the approval screen.** It asks only when you ran it in a terminal yourself. Say yes and it opens the screen, waits up to two more minutes for the tapflow entry to be switched on, and then switches the filter on.
+
+Switching the filter on can briefly drop connections this Mac already has open, SSH sessions included — if you are connected over SSH, run it at the Mac. If macOS asks whether to allow tapflow to filter network content when it switches on, allow it.
+
+If no screen appears, go there by the path above. The command cannot tell whether the window opened, so it shows the path alongside.
+
+If you declined, or ran it somewhere other than a terminal, approve it and run the same command once more. That run switches the filter on.
+
+If a device came into use while it waited — a simulator booted, say — it stops without switching the filter on. It names what it found; stop that and run the command again.
+
 ### 3. When a restart is needed
 
 Replacing an already-installed extension finishes only after the Mac restarts. **Until then the previous version keeps running** — the file on disk is the new one while macOS is still running the old one, so the dashboard goes on saying the Mac is not set up.
@@ -261,7 +271,7 @@ Installing ends with a distinct code per kind of failure.
 | 1 | Activation failed |
 | 2 | Could not read the configuration |
 | 3 | Could not save the configuration |
-| 4 | Not approved within 120 seconds. Approve it in System Settings and run it again |
+| 4 | Not approved within 120 seconds. Run from a terminal, the command asks whether to open the approval screen and keeps waiting; otherwise approve it in System Settings and run it again |
 | 5 | The Mac has to restart for this to finish |
 | 6 | The system extension manager gave no answer within 45 seconds |
 | 7 | The running filter did not answer |

@@ -86,8 +86,9 @@ Runs in one pass, asking for consent before each install (interactive terminals 
 - **Android**: installs a JDK, builds a self-contained SDK at `~/Library/Android/sdk` (command-line tools, platform-tools, emulator, system image — no Android Studio GUI), and creates a set of AVDs across form factors.
 
 On macOS, `setup ios` also installs the network filter that iOS network control needs — it asks
-first, like every other install here, and tells you when macOS is waiting for you to approve it in
-System Settings. If you decline, or the Mac was set up before the filter shipped,
+first, like every other install here. If macOS's approval does not come in time, it asks whether to
+open the approval screen and, if you say yes, waits for it to be switched on and finishes the
+install. If you decline the install, or the Mac was set up before the filter shipped,
 [`tapflow migrate net-filter`](#tapflow-migrate-net-filter) installs it on its own.
 
 Installing it ends with a wait of up to thirty seconds for the filter to report itself running, so
@@ -375,6 +376,24 @@ It copies the signed extension that came with `@tapflowio/ios-agent` into `/Appl
 macOS to activate it. Approving it is a step you take at that Mac, in **System Settings → General →
 Login Items & Extensions → Network Extensions**; macOS offers no command-line equivalent, so the
 command tells you when it is waiting on you.
+
+**A late approval still finishes in the same run.** The install waits up to two minutes for approval.
+If none has come and the command is running in an interactive terminal, it asks whether to open the
+approval screen. The question also says that switching the filter on can drop connections this Mac
+already has open, SSH sessions included. Say yes and it opens the screen, waits up to two more
+minutes for the tapflow entry to be switched on, then switches the filter on and confirms it is
+running. If macOS asks whether to allow tapflow to filter network content at that point, allow it.
+
+**It never says the screen opened.** The command has no way to know whether a window appeared, so it
+shows the path alongside. If nothing appears, go there by that path.
+
+**It checks for devices again just before switching on**, because someone may have booted a
+simulator during the wait. If it finds one, it stops without switching the filter on and says so if
+the filter is left off. With `--ignore-running-devices` it does not check again.
+
+Outside an interactive terminal it does not ask; it counts as interactive only when stdin and
+stdout are both terminals. There, and when you decline, it tells you to approve the extension and
+run the command again, and that run switches the filter on.
 
 It **refuses to replace a filter newer than the one it carries**. `/Applications` holds one copy for
 the whole Mac while each install judges it by its own dependencies, so an older checkout would
