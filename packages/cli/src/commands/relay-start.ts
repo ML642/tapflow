@@ -5,7 +5,7 @@ import { RelayServer, initDb, config, loadedEnvPath, createCertProvider, startTl
 import type { TunnelRuntime } from '@tapflowio/relay'
 import { banner, step, warn } from '../lib/print.js'
 import { startConfiguredTunnel, tunnelRuntimeFor } from '../lib/tunnel-runner.js'
-import { isPortFree } from '../lib/port-available.js'
+import { refuseUnlessBindable } from '../lib/port-available.js'
 import type { TunnelPlugin } from '../lib/tunnel.js'
 
 export interface RelayStartOptions {
@@ -74,12 +74,8 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
       throw new Error(`The tunnel port (${ports.tunnelPort}) must differ from the relay port. Set TAPFLOW_TUNNEL_PORT to another port.`)
     }
     tunnelPort = ports.tunnelPort
-    if (!(await isPortFree(port))) {
-      throw new Error(`Port ${port} is already in use. Stop the existing process and try again.`)
-    }
-    if (!(await isPortFree(ports.tunnelPort, '127.0.0.1'))) {
-      throw new Error(`Tunnel port ${ports.tunnelPort} is already in use. Stop the process holding it, or set TAPFLOW_TUNNEL_PORT to a free port.`)
-    }
+    await refuseUnlessBindable(port, 'relay')
+    await refuseUnlessBindable(ports.tunnelPort, 'tunnel', '127.0.0.1')
     const started = await startConfiguredTunnel(tunnelCfg, ports)
     tunnel = started.tunnel
     tunnelRuntime = tunnelRuntimeFor(started.publicUrl, tls !== undefined)

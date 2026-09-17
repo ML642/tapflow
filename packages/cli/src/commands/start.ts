@@ -7,7 +7,7 @@ import { requestAudioPermission, isAudioSupported } from '@tapflowio/ios-agent'
 import '@tapflowio/android-agent'
 import { banner, createSpinner, step, warn } from '../lib/print.js'
 import { startConfiguredTunnel, tunnelRuntimeFor } from '../lib/tunnel-runner.js'
-import { isPortFree } from '../lib/port-available.js'
+import { refuseUnlessBindable } from '../lib/port-available.js'
 import type { TunnelPlugin } from '../lib/tunnel.js'
 
 export interface StartOptions {
@@ -86,12 +86,8 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
       throw new Error(`The tunnel port (${ports.tunnelPort}) must differ from the relay port. Set TAPFLOW_TUNNEL_PORT to another port.`)
     }
     tunnelPort = ports.tunnelPort
-    if (!(await isPortFree(RELAY_PORT))) {
-      throw new Error(`Port ${RELAY_PORT} is already in use. Stop the existing process and try again.`)
-    }
-    if (!(await isPortFree(ports.tunnelPort, '127.0.0.1'))) {
-      throw new Error(`Tunnel port ${ports.tunnelPort} is already in use. Stop the process holding it, or set TAPFLOW_TUNNEL_PORT to a free port.`)
-    }
+    await refuseUnlessBindable(RELAY_PORT, 'relay')
+    await refuseUnlessBindable(ports.tunnelPort, 'tunnel', '127.0.0.1')
     const started = await startConfiguredTunnel(config.tunnel, ports)
     tunnel = started.tunnel
     tunnelRuntime = tunnelRuntimeFor(started.publicUrl, tls !== undefined)

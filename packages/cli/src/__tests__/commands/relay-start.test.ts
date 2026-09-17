@@ -23,10 +23,10 @@ vi.mock('../../lib/rathole-tunnel.js', () => ({
 vi.mock('../../lib/tailscale-tunnel.js', () => ({
   TailscaleTunnel: vi.fn().mockImplementation(function () { return mockTunnel }),
 }))
-vi.mock('../../lib/port-available.js', () => ({ isPortFree: vi.fn() }))
+vi.mock('../../lib/port-available.js', () => ({ refuseUnlessBindable: vi.fn() }))
 
 import { RelayServer, initDb, config, createCertProvider, resolveRelayDisplayHost, buildCorsOrigins, proxyWithoutPublicUrlWarning, isInitialized } from '@tapflowio/relay'
-import { isPortFree } from '../../lib/port-available.js'
+import { refuseUnlessBindable } from '../../lib/port-available.js'
 import { RatholeTunnel } from '../../lib/rathole-tunnel.js'
 import { TailscaleTunnel } from '../../lib/tailscale-tunnel.js'
 import { cmdRelayStart } from '../../commands/relay-start.js'
@@ -59,7 +59,7 @@ describe('cmdRelayStart', () => {
     vi.mocked(config).tunnel = null
     vi.mocked(config).tls = null
     vi.mocked(config).local.tunnelPort = null
-    vi.mocked(isPortFree).mockResolvedValue(true)
+    vi.mocked(refuseUnlessBindable).mockResolvedValue(undefined)
   })
 
   afterEach(() => vi.restoreAllMocks())
@@ -280,7 +280,7 @@ describe('cmdRelayStart', () => {
       await cmdRelayStart({ port: 5000 })
       expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ port: 5000, tunnelPort: 4001 }))
       expect(mockTunnel.start).toHaveBeenCalledWith({ relayPort: 5000, tunnelPort: 4001 })
-      expect(isPortFree).toHaveBeenCalledWith(4001, '127.0.0.1')
+      expect(refuseUnlessBindable).toHaveBeenCalledWith(4001, 'tunnel', '127.0.0.1')
     })
 
     it('moves the default tunnel port off a relay started on it', async () => {
@@ -297,11 +297,13 @@ describe('cmdRelayStart', () => {
       vi.mocked(config).local.tunnelPort = 4000
       await expect(cmdRelayStart({})).rejects.toThrow(/must differ from the relay port/)
       expect(mockTunnel.setupServer).not.toHaveBeenCalled()
-      expect(isPortFree).not.toHaveBeenCalled()
+      expect(refuseUnlessBindable).not.toHaveBeenCalled()
     })
 
     it('a taken tunnel port stops everything before the VPS side is touched', async () => {
-      vi.mocked(isPortFree).mockImplementation(async (port) => port !== 4001)
+      vi.mocked(refuseUnlessBindable).mockImplementation(async (port, role) => {
+        if (role === 'tunnel') throw new Error(`Tunnel port ${port} is already in use. Stop the process holding it, or set TAPFLOW_TUNNEL_PORT to a free port.`)
+      })
       await expect(cmdRelayStart({})).rejects.toThrow(/4001.*TAPFLOW_TUNNEL_PORT/)
       expect(mockTunnel.setupServer).not.toHaveBeenCalled()
       expect(RelayServer).not.toHaveBeenCalled()
@@ -320,9 +322,9 @@ describe('cmdRelayStart', () => {
     })
 
     it('포트가 이미 쓰이면 터널도 relay도 시작하지 않는다', async () => {
-      vi.mocked(isPortFree).mockResolvedValue(false)
+      vi.mocked(refuseUnlessBindable).mockRejectedValue(new Error('Port 4321 is already in use. Stop the existing process and try again.'))
       await expect(cmdRelayStart({ port: 4321 })).rejects.toThrow('already in use')
-      expect(isPortFree).toHaveBeenCalledWith(4321)
+      expect(refuseUnlessBindable).toHaveBeenCalledWith(4321, 'relay')
       expect(mockTunnel.setupServer).not.toHaveBeenCalled()
       expect(RelayServer).not.toHaveBeenCalled()
     })
@@ -355,7 +357,7 @@ describe('cmdRelayStart', () => {
     await cmdRelayStart({})
     expect(vi.mocked(RelayServer).mock.calls[0][0].tunnel).toBeUndefined()
     expect(vi.mocked(RelayServer).mock.calls[0][0].tunnelPort).toBeUndefined()
-    expect(isPortFree).not.toHaveBeenCalled()
+    expect(refuseUnlessBindable).not.toHaveBeenCalled()
   })
 
   describe('tailscale 터널', () => {
