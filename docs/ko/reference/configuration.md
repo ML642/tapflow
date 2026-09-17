@@ -45,7 +45,7 @@
 | 환경변수 | Config 키 | 기본값 | 설명 |
 |---------|-----------|--------|------|
 | `TAPFLOW_PORT` | `local.port` | `4000` | 서버 포트 |
-| `TAPFLOW_TUNNEL_PORT` | `local.tunnelPort` | 터널 설정이 있으면 `4001`, 없으면 꺼짐 | rathole, `tailscale serve`, `cloudflared` 같은 터널 클라이언트가 연결하는 loopback 전용 포트. 릴레이 머신 안에서 온 연결이라도 이 포트로 들어오면 원격으로 보므로, 로그인하거나 토큰을 내야 합니다. `tunnel` 설정이 있으면 자동으로 열립니다. tapflow가 띄우지 않는 터널이나 프록시에 쓰려면 이 값을 설정해 여세요. 릴레이가 `4001`을 쓰면 기본값은 `4002`로 바뀝니다. 컨테이너 안에서는 릴레이와 네트워크 네임스페이스를 공유하는 프로세스만 연결할 수 있습니다. |
+| `TAPFLOW_TUNNEL_PORT` | `local.tunnelPort` | 터널 설정이 있으면 `4001`, 없으면 꺼짐 | rathole, `tailscale serve`, `cloudflared` 같은 터널 클라이언트가 연결하는 loopback 전용 포트. 릴레이 머신 안에서 온 연결이라도 이 포트로 들어오면 원격으로 보므로, 로그인하거나 토큰을 내야 합니다. `tapflow start`와 `tapflow relay start`는 `tunnel` 설정이 있으면 이 포트를 엽니다. Docker 이미지를 포함한 그 밖의 경우에는 이 변수로 포트를 지정해야 열립니다. 릴레이와 같은 네트워크 네임스페이스에서 연결하는 터널이나 프록시가 있다면 설정하세요. 릴레이가 `4001`을 쓰면 기본값은 `4002`로 바뀝니다. 컨테이너 안에서는 릴레이와 네트워크 네임스페이스를 공유하는 프로세스만 연결할 수 있습니다. |
 | `JWT_SECRET` | — | *(자동 생성)* | JWT 서명 키 (환경변수 전용). 설정하지 않으면 최초 부팅 시 강력한 per-install 시크릿을 자동으로 생성해 데이터 디렉토리에 저장합니다. |
 | `TAPFLOW_DATA_DIR` | `local.dataDir` | `.tapflow/data` | DB·업로드 디렉토리 (상대 경로 지원) |
 | `TAPFLOW_RELAY_URL` | `relay.url` | *(비어있음)* | CLI 명령어의 기본 relay URL |

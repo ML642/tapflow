@@ -37,24 +37,20 @@ function clientToml(serverAddr: string, token: string, tunnelPort: number): stri
 
 const CLIENT_CONFIG_PREFIX = 'tapflow-rathole-client-'
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    // EPERM: it exists and belongs to someone else.
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
-  }
-}
-
 /**
  * Stops rathole clients whose tapflow process is gone.
  *
  * The client is spawned attached, and only SIGINT stops it with its parent — a `kill <pid>` or a crash
  * leaves it running and reconnecting to the VPS, where it takes turns with the new client for the same
  * service. One left by a version before the tunnel port forwards to the relay port, where its visitors
- * count as local. The owner's pid is in the config file name; a client whose owner is still alive is
- * another tapflow's, and is left alone.
+ * count as local, so leaving it is leaving that hole open.
+ *
+ * **The process listing is the liveness check, not `kill(pid, 0)`.** The owner's pid is in the config
+ * file name, and a bare liveness probe says yes for a pid the OS has handed to something else — on a Mac
+ * with a long uptime that is how the orphan above survives every later start. So an owner counts as alive
+ * only while a process with that pid is still a node or tapflow one. The cost of reading it the other way
+ * round is a live tunnel killed, which is why an owner that merely *looks* unrelated has to fail both
+ * words before its client is stopped.
  */
 function stopOrphanedClients(): void {
   let listing: string
@@ -63,12 +59,22 @@ function stopOrphanedClients(): void {
   } catch {
     return
   }
-  const pattern = new RegExp(`^\\s*(\\d+)\\s+\\S*rathole\\S*\\s+--client\\s+\\S*${CLIENT_CONFIG_PREFIX}(\\d+)\\.toml\\s*$`)
+  const commands = new Map<number, string>()
+  const clients: Array<{ pid: number; owner: number }> = []
+  const clientPattern = new RegExp(`^\\S*rathole\\S*\\s+--client\\s+\\S*${CLIENT_CONFIG_PREFIX}(\\d+)\\.toml$`)
   for (const line of listing.split('\n')) {
-    const match = pattern.exec(line)
-    if (!match) continue
-    if (isAlive(Number(match[2]))) continue
-    try { process.kill(Number(match[1])) } catch { /* already gone */ }
+    const row = /^\s*(\d+)\s+(.*\S)\s*$/.exec(line)
+    if (!row) continue
+    const pid = Number(row[1])
+    const command = row[2]
+    commands.set(pid, command)
+    const client = clientPattern.exec(command)
+    if (client) clients.push({ pid, owner: Number(client[1]) })
+  }
+  for (const { pid, owner } of clients) {
+    const ownerCommand = commands.get(owner)
+    if (ownerCommand !== undefined && /node|tapflow/i.test(ownerCommand)) continue
+    try { process.kill(pid) } catch { /* already gone, or another account's */ }
   }
 }
 

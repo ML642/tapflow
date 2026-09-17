@@ -88,6 +88,8 @@ Notice the `./data:/app/.tapflow/data` volume above. It is strictly required. Th
 
 **Topology:** The container runs the relay *only*. Agents (which drive real simulators) must still run on Macs on your LAN, connecting outbound to this Docker server using an `agent`-scope token (`tapflow agent start --relay ws://<docker-box-ip>:4000 --token ...`).
 
+**A tunnel or proxy in the same network namespace:** set `TAPFLOW_TUNNEL_PORT` and point it at the port it names. The relay does not ask connections from its own network namespace to sign in, and here nothing opens the tunnel port for you — `tapflow start` and `tapflow relay start` do that from a `tunnel` config, and this image runs neither. A proxy on another host reaches the relay over the bridge and is remote already, so it needs nothing.
+
 ::: danger Do not deploy the relay directly to a cloud service
 Deploying the Docker container to fly.io or similar services puts the agent→relay path over the internet. RTT then exceeds the 30fps threshold (33ms/frame), causing persistent frame drops with no way to recover. tapflow does not support this configuration.
 :::

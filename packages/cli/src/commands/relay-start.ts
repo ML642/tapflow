@@ -67,6 +67,12 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
   let tunnelPort = config.local.tunnelPort ?? undefined
   if (tunnelCfg != null) {
     const ports = { relayPort: port, tunnelPort: resolveTunnelPort(config.local.tunnelPort, port) }
+    // `RelayServer`'s constructor refuses this too, but it is built after the tunnel — and rathole's
+    // setupServer restarts the VPS-side server on its way, taking down the tunnel of whatever else that
+    // VPS serves. A setting that cannot work is refused before anything is touched.
+    if (ports.tunnelPort === port) {
+      throw new Error(`The tunnel port (${ports.tunnelPort}) must differ from the relay port. Set TAPFLOW_TUNNEL_PORT to another port.`)
+    }
     tunnelPort = ports.tunnelPort
     if (!(await isPortFree(port))) {
       throw new Error(`Port ${port} is already in use. Stop the existing process and try again.`)

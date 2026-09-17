@@ -293,6 +293,13 @@ describe('cmdRelayStart', () => {
       expect(output.join('\n')).toContain('127.0.0.1:4001')
     })
 
+    it('refuses a tunnel port equal to the relay port before the VPS side is touched', async () => {
+      vi.mocked(config).local.tunnelPort = 4000
+      await expect(cmdRelayStart({})).rejects.toThrow(/must differ from the relay port/)
+      expect(mockTunnel.setupServer).not.toHaveBeenCalled()
+      expect(isPortFree).not.toHaveBeenCalled()
+    })
+
     it('a taken tunnel port stops everything before the VPS side is touched', async () => {
       vi.mocked(isPortFree).mockImplementation(async (port) => port !== 4001)
       await expect(cmdRelayStart({})).rejects.toThrow(/4001.*TAPFLOW_TUNNEL_PORT/)

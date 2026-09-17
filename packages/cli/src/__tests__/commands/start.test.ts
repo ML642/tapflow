@@ -337,6 +337,14 @@ describe('cmdStart', () => {
       expect(iosConnectSpy).toHaveBeenCalledWith('ws://localhost:4000', expect.anything())
     })
 
+    it('refuses a tunnel port equal to the relay port before the tunnel starts', async () => {
+      vi.mocked(config).tunnel = { provider: 'tailscale' }
+      vi.mocked(config).local.tunnelPort = 4000
+      await expect(cmdStart({ platform: 'ios' })).rejects.toThrow(/must differ from the relay port/)
+      expect(startConfiguredTunnel).not.toHaveBeenCalled()
+      expect(isPortFree).not.toHaveBeenCalled()
+    })
+
     it('a taken tunnel port stops everything before the tunnel starts', async () => {
       vi.mocked(config).tunnel = { provider: 'tailscale' }
       vi.mocked(isPortFree).mockImplementation(async (port) => port !== 4001)

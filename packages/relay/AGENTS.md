@@ -13,7 +13,7 @@ status: living
 ## WHAT
 
 WebSocket relay server + dashboard serving: handles NAT traversal, session routing, and JWT auth, while also serving the dashboard static files from `public/` over HTTP.
-A single process on a single configurable port (default: 4000) handles both WebSocket connections and HTTP static serving. With `tls` configured it terminates HTTPS + WSS on that same port (LAN secure context, required for WebCodecs hardware decode) — full setup in [`docs/reference/configuration.md`](../../docs/reference/configuration.md). With a tunnel configured it also listens on a loopback-only **tunnel port** (default 4001, `TAPFLOW_TUNNEL_PORT`): the same handler, `WebSocketServer` and TLS material, but nothing arriving there counts as local.
+A single process on a single configurable port (default: 4000) handles both WebSocket connections and HTTP static serving. With `tls` configured it terminates HTTPS + WSS on that same port (LAN secure context, required for WebCodecs hardware decode) — full setup in [`docs/reference/configuration.md`](../../docs/reference/configuration.md). Given a `tunnelPort` it also listens on a loopback-only **tunnel port**: the same handler, `WebSocketServer` and TLS material, but nothing arriving there counts as local. The CLI passes one whenever a tunnel is configured (default 4001, `TAPFLOW_TUNNEL_PORT`); `server.ts` passes only what `local.tunnelPort` names, because that entry point starts no tunnel.
 
 ## Domain Structure — apps / builds separation (migration 004+)
 

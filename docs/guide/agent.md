@@ -30,7 +30,7 @@ Keep the agent and relay on the same wired LAN. Wi-Fi works but can stutter on a
 
 No authentication is needed when the agent connects to a relay on the same machine (`localhost`). When the relay runs on a different machine, it only accepts agents that present a token with the `agent` scope. This protects your sessions from an arbitrary device on the same network impersonating an agent and feeding screens into a test session.
 
-The relay requires authentication on every connection that does not come from localhost — this section covers the agent side. For how browsers reach the relay from outside the office (tunnels), see [External access in Self-Hosting the Relay](/guide/self-hosting#external-access).
+The relay requires authentication on every connection except one from its own machine on the relay port — this section covers the agent side. A tunnel client runs on that machine too, so it connects to a separate tunnel port where every connection has to authenticate. For how browsers reach the relay from outside the office (tunnels), see [External access in Self-Hosting the Relay](/guide/self-hosting#external-access).
 
 ### Create a token
 

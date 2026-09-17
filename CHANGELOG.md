@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`TAPFLOW_TUNNEL_PORT` (`local.tunnelPort`)** sets the loopback-only port that tunnel clients connect to. It opens on `4001` whenever a `tunnel` is configured. Set it to open the port for a tunnel or proxy that tapflow does not start, such as `cloudflared`. See [Configuration](https://www.tapflow.dev/reference/configuration).
+- **`TAPFLOW_TUNNEL_PORT` (`local.tunnelPort`)** sets the loopback-only port that tunnel clients connect to. `tapflow start` and `tapflow relay start` open it on `4001` whenever a `tunnel` is configured. The Docker image and any other way of running the relay open it only when this names a port, which is what a `cloudflared` sidecar or a same-host proxy needs. See [Configuration](https://www.tapflow.dev/reference/configuration).
 
 ### Changed
 

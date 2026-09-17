@@ -85,18 +85,14 @@ describe('RatholeTunnel', () => {
   // A client left behind by a tapflow process that died without its SIGINT handler keeps forwarding —
   // and one from before the tunnel port existed forwards to the relay port.
   describe('start() — clients left by a tapflow process that is gone', () => {
+    const TAPFLOW = '  111 node /Users/u/tapflow/packages/cli/bin/tapflow.js start'
+    const ORPHAN_CLIENT = '  501 /Users/u/.tapflow/bin/rathole-darwin-arm64 --client /var/folders/x/T/tapflow-rathole-client-222.toml'
+    const LIVE_CLIENT = '  502 /Users/u/.tapflow/bin/rathole-darwin-arm64 --client /tmp/tapflow-rathole-client-111.toml'
     const psOutput = (lines: string[]) => lines.join('\n') + '\n'
     let killSpy: MockInstance<typeof process.kill>
 
     beforeEach(() => {
-      killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
-        // Signal 0 is the liveness probe: 111 is alive, everything else is gone.
-        if (signal === 0) {
-          if (pid === 111) return true
-          throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
-        }
-        return true
-      }) as typeof process.kill)
+      killSpy = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
     })
 
     const startOnce = async () => {
@@ -108,9 +104,7 @@ describe('RatholeTunnel', () => {
     }
 
     it('kills them before starting a new one', async () => {
-      vi.mocked(execFileSync).mockReturnValue(psOutput([
-        '  501 /Users/u/.tapflow/bin/rathole-darwin-arm64 --client /var/folders/x/T/tapflow-rathole-client-222.toml',
-      ]))
+      vi.mocked(execFileSync).mockReturnValue(psOutput([ORPHAN_CLIENT]))
       await startOnce()
       expect(killSpy).toHaveBeenCalledWith(501)
       expect(vi.mocked(execFileSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(spawn).mock.invocationCallOrder[0]!)
@@ -118,20 +112,31 @@ describe('RatholeTunnel', () => {
 
     it('leaves a client whose tapflow process is still running, and unrelated processes', async () => {
       vi.mocked(execFileSync).mockReturnValue(psOutput([
-        '  502 /Users/u/.tapflow/bin/rathole-darwin-arm64 --client /tmp/tapflow-rathole-client-111.toml',
+        TAPFLOW,
+        LIVE_CLIENT,
         '  503 vim /tmp/tapflow-rathole-client-222.toml',
         '  504 /usr/local/bin/rathole --client /etc/rathole/client.toml',
       ]))
       await startOnce()
-      expect(killSpy).not.toHaveBeenCalledWith(502)
-      expect(killSpy).not.toHaveBeenCalledWith(503)
-      expect(killSpy).not.toHaveBeenCalledWith(504)
+      expect(killSpy).not.toHaveBeenCalled()
+    })
+
+    // A bare `kill(pid, 0)` answers yes for a pid the OS handed to something else, which would leave the
+    // orphan forwarding to the relay port for the life of that machine.
+    it('kills one whose owner pid came back as an unrelated process', async () => {
+      vi.mocked(execFileSync).mockReturnValue(psOutput([
+        '  222 /usr/sbin/cupsd -l -f',
+        ORPHAN_CLIENT,
+      ]))
+      await startOnce()
+      expect(killSpy).toHaveBeenCalledWith(501)
     })
 
     it('starts anyway when the process list cannot be read', async () => {
       vi.mocked(execFileSync).mockImplementation(() => { throw new Error('ps: not found') })
       await startOnce()
       expect(spawn).toHaveBeenCalled()
+      expect(killSpy).not.toHaveBeenCalled()
     })
   })
 
