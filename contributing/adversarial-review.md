@@ -233,7 +233,13 @@ What made the 4m30s pair cheap was structural, not stylistic. Each prompt carrie
    a list of five concerns.
 2. **The measurements, as premises.** File counts, error counts, config contents, wired-up scripts —
    whatever you already ran. Followed by: do not re-run these.
-3. **The files to read, listed.** Otherwise the reviewer greps the tree to find them.
+3. **The files to read, listed.** Otherwise the reviewer greps the tree to find them. **When one of
+   the lenses is whether the prose is still true, that list has to name `contributing/` too.** A
+   review of the tunnel-port change listed `docs/`, the AGENTS files and the CHANGELOG, and its
+   reviewer cleared them all correctly — while two decision records went on stating the invariant the
+   change had just narrowed, one of them in its own "read this before" header. The author found them
+   after the PR was open. The directory is where the *reasons* live, so it is the one place a wrong
+   sentence argues for the design that was removed.
 4. **The commands not to run**, by name.
 5. **A findings cap and a time budget.**
 6. **A required "checked and cleared" list**, so coverage is visible when nothing is found.
