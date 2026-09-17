@@ -77,4 +77,30 @@ describe('RelayServer TLS termination', () => {
       await server.stop()
     }
   })
+
+  // rathole forwards raw TCP, so a TLS relay behind it was already answering TLS through the tunnel. The
+  // tunnel listener keeps that, and a socket arriving there is still remote.
+  it('serves TLS on the tunnel port too, and treats a socket there as remote', async () => {
+    const server = new RelayServer({ port: 0, tunnelPort: 0, tls: { cert, key } })
+    await server.start()
+    const tunnelPort = (server.tunnelAddress() as { port: number }).port
+    try {
+      const status = await new Promise<number>((resolve, reject) => {
+        https
+          .get({ host: '127.0.0.1', port: tunnelPort, path: '/api/v1/auth/status', rejectUnauthorized: false }, (res) => {
+            resolve(res.statusCode ?? 0)
+            res.resume()
+          })
+          .on('error', reject)
+      })
+      expect(status).toBe(200)
+
+      const ws = new WebSocket(`wss://127.0.0.1:${tunnelPort}`, { rejectUnauthorized: false })
+      const code = await new Promise<number>((resolve) => ws.once('close', (c) => resolve(c)))
+      expect(code).toBe(1008)
+      expect(() => server.updateTlsContext({ cert, key })).not.toThrow()
+    } finally {
+      await server.stop()
+    }
+  })
 })

@@ -1,11 +1,11 @@
 import fs from 'fs'
 import path from 'path'
 import { z } from 'zod'
-import { RelayServer, initDb, config, loadedEnvPath, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost } from '@tapflowio/relay'
+import { RelayServer, initDb, config, loadedEnvPath, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost, resolveTunnelPort, isInitialized } from '@tapflowio/relay'
 import type { TunnelRuntime } from '@tapflowio/relay'
 import { banner, step, warn } from '../lib/print.js'
 import { startConfiguredTunnel, tunnelRuntimeFor } from '../lib/tunnel-runner.js'
-import { isPortFree } from '../lib/port-available.js'
+import { refuseUnlessBindable } from '../lib/port-available.js'
 import type { TunnelPlugin } from '../lib/tunnel.js'
 
 export interface RelayStartOptions {
@@ -60,14 +60,23 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
   const agentConnectHost = tls && displayHost.toLowerCase() !== 'localhost' ? displayHost : '<host>'
 
   // Tunnel before the relay, port checked first: same order and reasons as `tapflow start` (commands/start.ts).
+  // The tunnel listener opens with a tunnel, or on its own when its port is named (see commands/start.ts).
   let tunnel: TunnelPlugin | null = null
   let publicUrl: string | null = null
   let tunnelRuntime: TunnelRuntime | undefined
+  let tunnelPort = config.local.tunnelPort ?? undefined
   if (tunnelCfg != null) {
-    if (!(await isPortFree(port))) {
-      throw new Error(`Port ${port} is already in use. Stop the existing process and try again.`)
+    const ports = { relayPort: port, tunnelPort: resolveTunnelPort(config.local.tunnelPort, port) }
+    // `RelayServer`'s constructor refuses this too, but it is built after the tunnel — and rathole's
+    // setupServer restarts the VPS-side server on its way, taking down the tunnel of whatever else that
+    // VPS serves. A setting that cannot work is refused before anything is touched.
+    if (ports.tunnelPort === port) {
+      throw new Error(`The tunnel port (${ports.tunnelPort}) must differ from the relay port. Set TAPFLOW_TUNNEL_PORT to another port.`)
     }
-    const started = await startConfiguredTunnel(tunnelCfg, port)
+    tunnelPort = ports.tunnelPort
+    await refuseUnlessBindable(port, 'relay')
+    await refuseUnlessBindable(ports.tunnelPort, 'tunnel', '127.0.0.1')
+    const started = await startConfiguredTunnel(tunnelCfg, ports)
     tunnel = started.tunnel
     tunnelRuntime = tunnelRuntimeFor(started.publicUrl, tls !== undefined)
     // The banner advertises only what the relay will hand out.
@@ -80,7 +89,7 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
   let server: RelayServer
   try {
     // Construction is inside the try too: a TLS key that does not match its cert throws here.
-    server = new RelayServer({ port, uploadsDir: path.join(config.local.dataDir, 'uploads'), wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins: buildCorsOrigins(config, port, tunnelRuntime), tls, tunnel: tunnelRuntime })
+    server = new RelayServer({ port, uploadsDir: path.join(config.local.dataDir, 'uploads'), wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins: buildCorsOrigins(config, port, tunnelRuntime), tls, tunnel: tunnelRuntime, tunnelPort })
     await server.start()
   } catch (err) {
     await tunnel?.stop()
@@ -92,6 +101,11 @@ export async function cmdRelayStart(opts: RelayStartOptions): Promise<void> {
   banner('success', 'TAPFLOW RELAY READY', [
     `Relay  : ${httpScheme}://${displayHost}:${port}`,
     ...(publicUrl ? [`Public : ${publicUrl}`] : []),
+    ...(tunnelPort !== undefined ? [`Tunnel : 127.0.0.1:${tunnelPort} (tunnel clients connect here)`] : []),
+    // Setup is refused to anything arriving through the tunnel, so the public URL cannot be where it starts.
+    ...(publicUrl && !isInitialized()
+      ? [`First run: create the admin account on this machine — open ${httpScheme}://localhost:${port} here, or run \`tapflow admin init\`.`]
+      : []),
     `Connect Mac agents:  tapflow agent start --relay ${wsScheme}://${agentConnectHost}:${port} --token <agent-PAT>`,
     `  Issue an 'agent'-scope token in the dashboard (Settings → Tokens).`,
     'Press Ctrl+C to stop.',

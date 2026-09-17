@@ -7,8 +7,8 @@ status: stable
 # Why remote agents authenticate with an `agent`-scope PAT, not an IP check
 
 > Read this before gating agent registration on IP address, or before removing the PAT
-> requirement for non-loopback agents. Loopback stays unauthenticated on purpose; everything
-> remote needs a token.
+> requirement for non-loopback agents. Loopback **on the relay port** stays unauthenticated on
+> purpose; everything remote needs a token.
 
 ## The shape
 
@@ -28,6 +28,14 @@ the `agent` scope, which only an admin can issue. The token rides the WebSocket 
 - **The token is an opaque string to the agent** (`--token` / `TAPFLOW_AGENT_TOKEN`), never
   named `--pat`. This leaves room to split out a non-account service token later without a
   breaking change; agent and session data are not tied to the PAT's `userId` beyond audit logs.
+- **The exemption is a property of the port, not only of the address.** A tunnel client
+  (rathole, `tailscale serve`) runs on the relay's own machine and connects from loopback on
+  behalf of someone on the internet, and a raw-TCP forwarder adds no header to say so. Every
+  visitor of a tunnel URL therefore inherited the local agent's exemption, for as long as the
+  tunnel and this exemption coexisted. Tunnel clients now connect to a separate loopback-only
+  port where the exemption does not apply
+  (`resolveClientAddress`'s `viaTunnel`). The address check alone could not have been made
+  correct here: the two connections are identical at the socket.
 - **Role stays first-message-decided.** A non-loopback connection with a valid `agent`-scope PAT
   is classified the same way a local one is (by its first `agent:register`/`stream:register`),
   not forced to `browser`. A cookie-authenticated or `view`-scope connection stays `browser`, so

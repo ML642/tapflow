@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { buildCorsOrigins, proxyWithoutPublicUrlWarning } from '../lib/proxyConfig.js'
+import { buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveTunnelPort, DEFAULT_TUNNEL_PORT } from '../lib/proxyConfig.js'
 import type { TapflowConfig } from '../lib/config.js'
 
 function cfg(over: Partial<{ trustedProxies: string[]; publicUrl: string; relayUrl: string }> = {}): Pick<TapflowConfig, 'tunnel' | 'relay' | 'local'> {
   return {
     tunnel: over.publicUrl ? ({ provider: 'tailscale', publicUrl: over.publicUrl } as TapflowConfig['tunnel']) : null,
     relay: { url: over.relayUrl ?? null },
-    local: { port: 4000, dataDir: '.', wsBackpressureBytes: 1, trustedProxies: over.trustedProxies ?? [] },
+    local: { port: 4000, dataDir: '.', wsBackpressureBytes: 1, trustedProxies: over.trustedProxies ?? [], tunnelPort: null },
   }
 }
 
@@ -52,5 +52,26 @@ describe('proxyWithoutPublicUrlWarning', () => {
 
   it('trustedProxies 없으면 null', () => {
     expect(proxyWithoutPublicUrlWarning(cfg())).toBeNull()
+  })
+})
+
+describe('resolveTunnelPort', () => {
+  it('uses the default when nothing names a port', () => {
+    expect(DEFAULT_TUNNEL_PORT).toBe(4001)
+    expect(resolveTunnelPort(null, 4000)).toBe(4001)
+  })
+
+  it('an explicit port wins', () => {
+    expect(resolveTunnelPort(4100, 4000)).toBe(4100)
+  })
+
+  // `tapflow relay start --port 4001` never mentions the tunnel port, so the default must step aside
+  // rather than fail on a collision the user did not create.
+  it('moves the default off a relay that took it', () => {
+    expect(resolveTunnelPort(null, 4001)).toBe(4002)
+  })
+
+  it('leaves an explicit collision for the relay to refuse', () => {
+    expect(resolveTunnelPort(4001, 4001)).toBe(4001)
   })
 })

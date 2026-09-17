@@ -88,6 +88,8 @@ Notice the `./data:/app/.tapflow/data` volume above. It is strictly required. Th
 
 **Topology:** The container runs the relay *only*. Agents (which drive real simulators) must still run on Macs on your LAN, connecting outbound to this Docker server using an `agent`-scope token (`tapflow agent start --relay ws://<docker-box-ip>:4000 --token ...`).
 
+**A tunnel or proxy in the same network namespace:** set `TAPFLOW_TUNNEL_PORT` (or `local.tunnelPort`) and point it at the port it names. The relay does not ask connections that reach it over loopback to sign in, and a proxy sharing the container's namespace reaches it that way. Nothing here opens the tunnel port from a `tunnel` config: that is what `tapflow start` and `tapflow relay start` do, and this image runs neither. Naming the port is what opens it. A proxy on another host reaches the relay over the bridge and is remote already, so it needs nothing.
+
 ::: danger Do not deploy the relay directly to a cloud service
 Deploying the Docker container to fly.io or similar services puts the agent→relay path over the internet. RTT then exceeds the 30fps threshold (33ms/frame), causing persistent frame drops with no way to recover. tapflow does not support this configuration.
 :::
@@ -238,16 +240,24 @@ Set `"publicUrl": "http://your-hostname.tailnet.ts.net:4000"` in the tunnel conf
 Tailscale only provides the browser→relay path. Agents (simulator Macs) still connect to the relay's internal IP over your LAN — no change needed there.
 :::
 
+::: warning Run tailscaled with a TUN device
+The relay does not ask connections that reach the relay port over loopback to sign in. In userspace-networking mode (`tailscaled --tun=userspace-networking`, common in containers), Tailscale hands every tailnet connection to the relay from inside the relay's machine, so those visitors skip sign-in. Use the default TUN mode. `tapflow start` and `tapflow relay start` warn when they detect userspace networking.
+:::
+
 #### Enable HTTPS for the smoother stream (optional)
 
 The default Tailscale URL is plain HTTP, so teammates get the Standard profile. Terminating over Tailscale's free HTTPS moves them to the Smooth profile (see [Streaming Quality](/guide/streaming)). Tailscale issues and renews the `*.ts.net` certificate automatically, so no domain or DNS token is needed.
 
 1. In the Tailscale admin console under **DNS**, enable **MagicDNS** and **HTTPS Certificates**. You'll acknowledge that machine names appear in the public Certificate Transparency log.
-2. On the relay Mac, terminate the relay port over HTTPS. Tailscale manages the certificate for you, so there's no separate issue step:
+2. On the relay Mac, terminate HTTPS in front of the relay's **tunnel port**. That is `4001`, unless you set `TAPFLOW_TUNNEL_PORT` or the relay itself runs on 4001, in which case it steps aside to 4002. The start banner prints the port it took, so use that number in the command below. Tailscale manages the certificate for you, so there's no separate issue step:
 
 ```sh
-tailscale serve 4000
+tailscale serve --bg 4001
 ```
+
+::: warning Serve the tunnel port, not 4000
+`tailscale serve` connects to the relay from the relay Mac itself. On port `4000` the relay treats those connections as local and does not ask them to sign in. On the tunnel port every connection counts as remote. If an earlier setup serves `4000`, run `tailscale serve reset` and then the command above. `tapflow start` warns while the old setting is in place.
+:::
 
 3. Point `publicUrl` at the HTTPS address in `tapflow.config.json` so the banner and shared URL match:
 
@@ -260,7 +270,7 @@ tailscale serve 4000
 }
 ```
 
-Teammates opening that HTTPS address now get the Smooth profile. The relay itself stays on HTTP (4000) and needs no `tls` config — Tailscale terminates TLS in front of it.
+Teammates opening that HTTPS address now get the Smooth profile. The relay itself stays on HTTP and needs no `tls` config — Tailscale terminates TLS in front of it.
 
 ### VPS + rathole
 
@@ -345,8 +355,10 @@ tapflow connects to the VPS over SSH, downloads and installs rathole automatical
 
 Browsers connect to `https://your-vps.com`; agents still connect to the relay's internal IP (`ws://192.168.x.x:4000`).
 
+On the relay Mac, the tunnel hands visitors to the relay's **tunnel port** (`127.0.0.1:4001`), not to `4000`. The relay counts every connection on that port as remote, even though it comes from the Mac itself, so visitors sign in and tools present a token. If `4001` is taken, set `TAPFLOW_TUNNEL_PORT`; tapflow points the tunnel at whichever port the banner shows.
+
 ::: tip VPS firewall
-Open ports `2333/tcp` (rathole) and `443/tcp` (Caddy) on the VPS. Port `4000` does not need to be public — Caddy proxies it internally.
+Open ports `2333/tcp` (rathole) and `443/tcp` (Caddy) on the VPS. Keep port `4000` closed. Caddy reaches it from inside the VPS, and a direct connection would skip TLS.
 :::
 
 ::: danger Do not deploy the relay directly to a cloud service

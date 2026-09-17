@@ -87,6 +87,8 @@ docker compose up -d
 
 **토폴로지:** 이 컨테이너는 릴레이만 실행합니다. 실제 시뮬레이터를 구동하는 에이전트는 같은 LAN의 Mac에서 실행되어야 하며, `agent` 스코프 토큰을 사용하여 이 Docker 서버로 아웃바운드 연결을 해야 합니다(`tapflow agent start --relay ws://<docker-box-ip>:4000 --token ...`).
 
+**같은 네트워크 네임스페이스의 터널이나 프록시를 앞에 둔다면** `TAPFLOW_TUNNEL_PORT`(또는 `local.tunnelPort`)를 설정하고 그 포트로 연결하세요. 릴레이는 loopback으로 들어온 연결에 로그인을 요구하지 않고, 컨테이너의 네임스페이스를 공유하는 프록시는 그 경로로 연결합니다. 이 이미지에는 `tunnel` 설정을 보고 터널 포트를 여는 것이 없습니다. 그 일을 하는 쪽은 `tapflow start`와 `tapflow relay start`이며 이 이미지는 둘 다 실행하지 않습니다. 포트를 지정하는 것이 곧 여는 방법입니다. 다른 호스트의 프록시는 브리지를 거쳐 오므로 이미 원격으로 취급되며, 따로 설정할 것이 없습니다.
+
 ::: danger 릴레이를 클라우드에 직접 배포하지 마세요
 fly.io 등 클라우드 서비스에 Docker 컨테이너를 올리면 에이전트→릴레이 구간이 인터넷을 타게 됩니다. 이 경우 RTT가 30fps 기준(33ms/frame)을 초과해 프레임 드롭이 발생하며 스트리밍 품질을 보장할 수 없습니다. tapflow는 이 구성을 지원하지 않습니다.
 :::
@@ -237,16 +239,24 @@ config의 `tunnel` 섹션에 `"publicUrl": "http://your-hostname.tailnet.ts.net:
 Tailscale은 브라우저→릴레이 경로만 제공합니다. 에이전트(시뮬레이터 Mac)는 계속 LAN 내부 IP로 릴레이에 연결합니다 — 에이전트 설정 변경 없이 사용 가능합니다.
 :::
 
+::: warning tailscaled는 TUN 모드로 실행하세요
+릴레이는 릴레이 포트에 loopback으로 들어온 연결에 로그인을 요구하지 않습니다. userspace-networking 모드(`tailscaled --tun=userspace-networking`, 컨테이너에서 흔함)에서는 Tailscale이 tailnet 연결을 모두 릴레이 머신 안에서 넘겨주므로, 이 방문자들은 로그인 없이 들어옵니다. 기본값인 TUN 모드를 쓰세요. `tapflow start`와 `tapflow relay start`는 userspace 모드를 감지하면 경고합니다.
+:::
+
 #### HTTPS로 더 부드러운 스트림 켜기 (선택)
 
 기본 접속은 평문 HTTP라 팀원에게 Standard 프로파일이 적용됩니다. Tailscale의 무료 HTTPS로 종단하면 Smooth 프로파일로 전환됩니다([스트림 품질](/ko/guide/streaming) 참고). Tailscale이 `*.ts.net` 인증서를 자동 발급·갱신하므로 도메인이나 DNS 토큰이 필요 없습니다.
 
 1. Tailscale admin 콘솔의 **DNS** 설정에서 **MagicDNS**와 **HTTPS Certificates**를 켭니다. 머신 이름이 공개 Certificate Transparency 기록에 남는다는 점에 동의해야 합니다.
-2. 릴레이 Mac에서 relay 포트를 HTTPS로 종단합니다. Tailscale이 인증서를 자동 관리하므로 별도 발급 명령은 필요 없습니다:
+2. 릴레이 Mac에서 릴레이의 **터널 포트** 앞에 HTTPS를 둡니다. 기본값은 `4001`이고, `TAPFLOW_TUNNEL_PORT`를 정했거나 릴레이 자신이 4001을 쓰면 4002로 비켜섭니다. 시작 배너에 실제로 잡은 포트가 나오니 아래 명령에는 그 번호를 쓰세요. Tailscale이 인증서를 자동 관리하므로 별도 발급 명령은 필요 없습니다:
 
 ```sh
-tailscale serve 4000
+tailscale serve --bg 4001
 ```
+
+::: warning tailscale serve는 4000이 아니라 터널 포트로
+`tailscale serve`는 릴레이 Mac 안에서 릴레이로 연결합니다. `4000` 포트에서는 릴레이가 이 연결을 로컬로 보고 로그인을 요구하지 않습니다. 터널 포트에서는 모든 연결을 원격으로 봅니다. 예전 설정이 `4000`을 serve하고 있다면 `tailscale serve reset`을 실행한 뒤 위 명령을 다시 실행하세요. 예전 설정이 남아 있는 동안 `tapflow start`가 경고합니다.
+:::
 
 3. `tapflow.config.json`의 `publicUrl`을 HTTPS 주소로 바꿔 배너·안내 URL을 맞춥니다:
 
@@ -259,7 +269,7 @@ tailscale serve 4000
 }
 ```
 
-팀원이 이 HTTPS 주소로 접속하면 Smooth 프로파일로 스트리밍됩니다. 릴레이 자체는 HTTP(4000)로 두며 `tls` 설정은 필요 없습니다. TLS는 Tailscale이 앞단에서 종단합니다.
+팀원이 이 HTTPS 주소로 접속하면 Smooth 프로파일로 스트리밍됩니다. 릴레이 자체는 HTTP로 두며 `tls` 설정은 필요 없습니다. TLS는 Tailscale이 앞단에서 종단합니다.
 
 ### VPS + rathole
 
@@ -344,8 +354,10 @@ tapflow가 SSH로 VPS에 접속해 첫 실행 시 rathole을 자동으로 설치
 
 브라우저는 `https://your-vps.com`으로 접속하고, 에이전트는 릴레이의 내부 IP(`ws://192.168.x.x:4000`)로 연결합니다.
 
+릴레이 Mac에서 터널은 방문자를 `4000`이 아니라 릴레이의 **터널 포트**(`127.0.0.1:4001`)로 넘깁니다. 이 포트로 들어온 연결은 Mac 안에서 왔더라도 릴레이가 모두 원격으로 보므로, 방문자는 로그인하고 도구는 토큰을 내야 합니다. `4001`을 다른 프로그램이 쓰고 있다면 `TAPFLOW_TUNNEL_PORT`를 설정하세요. tapflow는 배너에 표시된 포트로 터널을 연결합니다.
+
 ::: tip VPS 방화벽
-VPS에서 `2333/tcp`(rathole)와 `443/tcp`(Caddy)를 열어야 합니다. `4000` 포트는 공개할 필요 없습니다 — Caddy가 내부에서 프록시합니다.
+VPS에서 `2333/tcp`(rathole)와 `443/tcp`(Caddy)를 열어야 합니다. `4000` 포트는 닫아 두세요. Caddy는 VPS 안에서 이 포트에 연결합니다. 외부에서 직접 연결하면 TLS를 거치지 않습니다.
 :::
 
 ::: danger 릴레이를 클라우드에 직접 배포하지 마세요

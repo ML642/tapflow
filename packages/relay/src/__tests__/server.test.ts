@@ -12,6 +12,11 @@ const mocks = vi.hoisted(() => ({
   tls: { mode: 'import-cert', certPath: '/cert.pem', keyPath: '/key.pem' } as const,
   containerWarning: vi.fn((): string | null => null),
   inContainer: vi.fn(() => false),
+  // Hoisted so the same mock survives `vi.resetModules()` between imports of the entry point.
+  RelayServer: vi.fn(function (_options: { port: number; tunnelPort?: number }): { start: () => Promise<unknown>; stop: () => Promise<unknown> } {
+    return { start: mocks.start, stop: mocks.stop }
+  }),
+  local: { port: 4000, dataDir: '/tmp/tapflow-test', wsBackpressureBytes: 1048576, trustedProxies: [] as string[], tunnelPort: null as number | null },
 }))
 
 vi.mock('@tapflowio/agent-core', () => ({
@@ -19,11 +24,11 @@ vi.mock('@tapflowio/agent-core', () => ({
 }))
 vi.mock('../db.js', () => ({ initDb: mocks.initDb }))
 vi.mock('../RelayServer.js', () => ({
-  RelayServer: vi.fn(function () { return { start: mocks.start, stop: mocks.stop } }),
+  RelayServer: mocks.RelayServer,
 }))
 vi.mock('../lib/config.js', () => ({
   config: {
-    local: { port: 4000, dataDir: '/tmp/tapflow-test', wsBackpressureBytes: 1048576, trustedProxies: [] },
+    local: mocks.local,
     relay: { url: null },
     tunnel: null,
     tls: mocks.tls,
@@ -47,6 +52,7 @@ describe('relay server startup output', () => {
     vi.clearAllMocks()
     mocks.inContainer.mockReturnValue(false)
     mocks.containerWarning.mockReturnValue(null)
+    mocks.local.tunnelPort = null
     vi.resetModules()
     vi.spyOn(process, 'on').mockImplementation(() => process)
   })
@@ -70,5 +76,21 @@ describe('relay server startup output', () => {
     await vi.waitFor(() => expect(mocks.start).toHaveBeenCalled())
     expect(mocks.containerWarning).toHaveBeenCalledWith(expect.objectContaining({ relay: { url: null } }), true)
     expect(mocks.warn).toHaveBeenCalledWith('Running in a container with no public URL')
+  })
+
+  // This entry point starts no tunnel, so a configured `tunnel` block alone does not open the listener —
+  // only a port named on purpose does, for a tunnel or proxy sharing the relay's network namespace.
+  it('opens the tunnel listener only when a tunnel port is named', async () => {
+    await import('../server.js')
+    await vi.waitFor(() => expect(mocks.start).toHaveBeenCalled())
+    expect(mocks.RelayServer.mock.calls[0]![0]).toMatchObject({ port: 4000 })
+    expect(mocks.RelayServer.mock.calls[0]![0].tunnelPort).toBeUndefined()
+
+    vi.clearAllMocks()
+    vi.resetModules()
+    mocks.local.tunnelPort = 4100
+    await import('../server.js')
+    await vi.waitFor(() => expect(mocks.start).toHaveBeenCalled())
+    expect(mocks.RelayServer).toHaveBeenCalledWith(expect.objectContaining({ tunnelPort: 4100 }))
   })
 })

@@ -15,6 +15,21 @@ export function buildCorsOrigins(cfg: ProxyCfg, port: number, tunnel?: TunnelRun
   return [...new Set(origins)]
 }
 
+/** Where the tunnel listener goes when nothing names a port. See `RelayServer`'s `tunnelPort`. */
+export const DEFAULT_TUNNEL_PORT = 4001
+
+/**
+ * The port for the tunnel listener, for an entry point that starts or expects a tunnel.
+ *
+ * `tapflow relay start --port 4001` says nothing about the tunnel port, so a default that lands on the
+ * relay's own port steps aside instead of failing on a collision nobody asked for. A port named on purpose
+ * is returned as is, and a collision there is refused by `RelayServer` with the setting's name.
+ */
+export function resolveTunnelPort(explicit: number | null, relayPort: number): number {
+  if (explicit !== null) return explicit
+  return relayPort === DEFAULT_TUNNEL_PORT ? DEFAULT_TUNNEL_PORT + 1 : DEFAULT_TUNNEL_PORT
+}
+
 // A proxied/tunneled relay needs a public URL, or the CSRF/CORS allowlist stays loopback-only and blocks proxied POSTs.
 export function proxyWithoutPublicUrlWarning(cfg: ProxyCfg, tunnel?: TunnelRuntime): string | null {
   if (cfg.local.trustedProxies.length > 0 && resolvePublicBaseUrl(cfg, tunnel) === null) {

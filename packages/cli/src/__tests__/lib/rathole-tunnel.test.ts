@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 import { EventEmitter } from 'events'
 
 const mockProcess = () => {
@@ -9,7 +9,7 @@ const mockProcess = () => {
   return proc
 }
 
-vi.mock('child_process', () => ({ spawn: vi.fn() }))
+vi.mock('child_process', () => ({ spawn: vi.fn(), execFileSync: vi.fn() }))
 vi.mock('fs', () => ({
   default: {
     mkdirSync: vi.fn(),
@@ -27,12 +27,15 @@ vi.mock('../../lib/download-binary.js', () => ({
   cachedBinaryPath: vi.fn().mockReturnValue('/home/user/.tapflow/bin/rathole-darwin-arm64'),
 }))
 
-import { spawn } from 'child_process'
+import { spawn, execFileSync } from 'child_process'
+import fs from 'fs'
 import { sshExec, scpUpload } from '../../lib/ssh.js'
 import { downloadBinary } from '../../lib/download-binary.js'
 import { RatholeTunnel } from '../../lib/rathole-tunnel.js'
 
 const SSH = { host: 'vps.example.com', user: 'ubuntu', keyPath: '~/.ssh/id_rsa' }
+
+const PORTS = { relayPort: 4000, tunnelPort: 4001 }
 
 const BASE_OPTS = {
   serverAddr: 'vps.example.com:2333',
@@ -50,6 +53,7 @@ describe('RatholeTunnel', () => {
     vi.mocked(sshExec).mockResolvedValue('')
     vi.mocked(scpUpload).mockResolvedValue(undefined)
     vi.mocked(downloadBinary).mockResolvedValue('/home/user/.tapflow/bin/rathole-darwin-arm64')
+    vi.mocked(execFileSync).mockReturnValue('')
   })
 
   afterEach(() => vi.restoreAllMocks())
@@ -57,7 +61,7 @@ describe('RatholeTunnel', () => {
   // ── start() ──────────────────────────────────────────
   it('start() — rathole client spawn 후 publicUrl 반환', async () => {
     const tunnel = new RatholeTunnel(BASE_OPTS)
-    const startPromise = tunnel.start(4000)
+    const startPromise = tunnel.start(PORTS)
     await Promise.resolve() // downloadBinary microtask 완료 대기
     proc.stderr!.emit('data', Buffer.from('[INFO] Tunnel started\n'))
     const result = await startPromise
@@ -65,19 +69,110 @@ describe('RatholeTunnel', () => {
     expect(result.publicUrl).toBe('https://vps.example.com')
   })
 
+  // The relay port treats loopback as local and skips sign-in, so a client forwarding the public URL there
+  // would hand that exemption to everyone who has the URL.
+  it('start() — the client forwards to the tunnel port, never the relay port', async () => {
+    const tunnel = new RatholeTunnel(BASE_OPTS)
+    const startPromise = tunnel.start({ relayPort: 4000, tunnelPort: 4555 })
+    await Promise.resolve()
+    proc.stderr!.emit('data', Buffer.from('[INFO] Tunnel started\n'))
+    await startPromise
+    const toml = String(vi.mocked(fs.writeFileSync).mock.calls.at(-1)![1])
+    expect(toml).toContain('local_addr = "127.0.0.1:4555"')
+    expect(toml).not.toContain(':4000')
+  })
+
+  // A client left behind by a tapflow process that died without its SIGINT handler keeps forwarding —
+  // and one from before the tunnel port existed forwards to the relay port.
+  describe('start() — clients left by a tapflow process that is gone', () => {
+    const TAPFLOW = '  111 node /Users/u/tapflow/packages/cli/bin/tapflow.js start'
+    const ORPHAN_CLIENT = '  501 /Users/u/.tapflow/bin/rathole-darwin-arm64 --client /var/folders/x/T/tapflow-rathole-client-222.toml'
+    const LIVE_CLIENT = '  502 /Users/u/.tapflow/bin/rathole-darwin-arm64 --client /tmp/tapflow-rathole-client-111.toml'
+    const psOutput = (lines: string[]) => lines.join('\n') + '\n'
+    let killSpy: MockInstance<typeof process.kill>
+
+    beforeEach(() => {
+      killSpy = vi.spyOn(process, 'kill').mockImplementation((() => true) as typeof process.kill)
+    })
+
+    const startOnce = async () => {
+      const tunnel = new RatholeTunnel(BASE_OPTS)
+      const startPromise = tunnel.start(PORTS)
+      await Promise.resolve()
+      proc.stderr!.emit('data', Buffer.from('[INFO] Tunnel started\n'))
+      await startPromise
+    }
+
+    it('kills them before starting a new one', async () => {
+      vi.mocked(execFileSync).mockReturnValue(psOutput([ORPHAN_CLIENT]))
+      await startOnce()
+      expect(killSpy).toHaveBeenCalledWith(501)
+      expect(vi.mocked(execFileSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(spawn).mock.invocationCallOrder[0]!)
+    })
+
+    it('leaves a client whose tapflow process is still running, and unrelated processes', async () => {
+      vi.mocked(execFileSync).mockReturnValue(psOutput([
+        TAPFLOW,
+        LIVE_CLIENT,
+        '  503 vim /tmp/tapflow-rathole-client-222.toml',
+        '  504 /usr/local/bin/rathole --client /etc/rathole/client.toml',
+      ]))
+      await startOnce()
+      expect(killSpy).not.toHaveBeenCalled()
+    })
+
+    // A bare `kill(pid, 0)` answers yes for a pid the OS handed to something else, which would leave the
+    // orphan forwarding to the relay port for the life of that machine.
+    it('kills one whose owner pid came back as an unrelated process', async () => {
+      vi.mocked(execFileSync).mockReturnValue(psOutput([
+        '  222 /usr/sbin/cupsd -l -f',
+        ORPHAN_CLIENT,
+      ]))
+      await startOnce()
+      expect(killSpy).toHaveBeenCalledWith(501)
+    })
+
+    // "A node process" is not tapflow: the reused pid on a dev Mac is most likely another node one.
+    it('kills one whose owner pid came back as an unrelated node process', async () => {
+      vi.mocked(execFileSync).mockReturnValue(psOutput([
+        '  222 /Users/u/.nvm/versions/node/v24.15.0/bin/node /Users/u/Library/lsp/server.js',
+        ORPHAN_CLIENT,
+      ]))
+      await startOnce()
+      expect(killSpy).toHaveBeenCalledWith(501)
+    })
+
+    // `startConfiguredTunnel` runs setupServer first, and a failure there never reaches start().
+    it('also runs from setupServer, so a failure before start() still cleans up', async () => {
+      vi.mocked(execFileSync).mockReturnValue(psOutput([ORPHAN_CLIENT]))
+      vi.mocked(downloadBinary).mockRejectedValue(new Error('network down'))
+      const tunnel = new RatholeTunnel({ ...BASE_OPTS, ssh: SSH })
+      await expect(tunnel.setupServer()).rejects.toThrow()
+      expect(killSpy).toHaveBeenCalledWith(501)
+      expect(spawn).not.toHaveBeenCalled()
+    })
+
+    it('starts anyway when the process list cannot be read', async () => {
+      vi.mocked(execFileSync).mockImplementation(() => { throw new Error('ps: not found') })
+      await startOnce()
+      expect(spawn).toHaveBeenCalled()
+      expect(killSpy).not.toHaveBeenCalled()
+    })
+  })
+
   it('start() — 토큰 누락 시 에러', async () => {
     const tunnel = new RatholeTunnel({ ...BASE_OPTS, token: '' })
-    await expect(tunnel.start(4000)).rejects.toThrow(/TAPFLOW_TUNNEL_TOKEN/)
+    await expect(tunnel.start(PORTS)).rejects.toThrow(/TAPFLOW_TUNNEL_TOKEN/)
   })
 
   it('start() — serverAddr 누락 시 에러', async () => {
     const tunnel = new RatholeTunnel({ ...BASE_OPTS, serverAddr: '' })
-    await expect(tunnel.start(4000)).rejects.toThrow(/serverAddr/)
+    await expect(tunnel.start(PORTS)).rejects.toThrow(/serverAddr/)
   })
 
   it('프로세스 exit(1) → start() reject', async () => {
     const tunnel = new RatholeTunnel(BASE_OPTS)
-    const startPromise = tunnel.start(4000)
+    const startPromise = tunnel.start(PORTS)
     await Promise.resolve() // downloadBinary microtask 완료 대기
     proc.emit('exit', 1)
     await expect(startPromise).rejects.toThrow(/exited/)
@@ -125,7 +220,7 @@ describe('RatholeTunnel', () => {
   it('stop() — client kill + 임시 파일 삭제', async () => {
     const fs = await import('fs')
     const tunnel = new RatholeTunnel(BASE_OPTS)
-    const startPromise = tunnel.start(4000)
+    const startPromise = tunnel.start(PORTS)
     await Promise.resolve()
     proc.stderr!.emit('data', Buffer.from('[INFO] Tunnel started\n'))
     await startPromise
@@ -137,7 +232,7 @@ describe('RatholeTunnel', () => {
   it('stop() — ssh 있으면 VPS server도 종료', async () => {
     const tunnel = new RatholeTunnel({ ...BASE_OPTS, ssh: SSH })
     await tunnel.setupServer()
-    const startPromise = tunnel.start(4000)
+    const startPromise = tunnel.start(PORTS)
     await Promise.resolve()
     proc.stderr!.emit('data', Buffer.from('[INFO] Tunnel started\n'))
     await startPromise

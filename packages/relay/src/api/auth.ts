@@ -4,7 +4,7 @@ import { makePasswordHash, verifyPassword, isInitialized, createAdminAccount } f
 import { signJwt, requireAuth } from '../middleware/auth.js'
 import { json, readJson } from '../router.js'
 import { config } from '../lib/config.js'
-import { resolveClientAddress } from '../lib/clientAddress.js'
+import { isTunnelIngress, resolveClientAddress } from '../lib/clientAddress.js'
 import { createRateLimiter, type RateLimiter } from '../middleware/rateLimit.js'
 
 function resolveClient(req: http.IncomingMessage, trustedProxies: string[]) {
@@ -13,6 +13,7 @@ function resolveClient(req: http.IncomingMessage, trustedProxies: string[]) {
     socketAddr: req.socket.remoteAddress ?? '',
     forwardedFor: Array.isArray(xff) ? xff[0] : xff,
     trustedProxies,
+    viaTunnel: isTunnelIngress(req),
   })
 }
 

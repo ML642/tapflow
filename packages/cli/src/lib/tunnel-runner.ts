@@ -2,7 +2,7 @@ import type { TapflowConfig, TunnelRuntime } from '@tapflowio/relay'
 import { RatholeTunnel } from './rathole-tunnel.js'
 import { TailscaleTunnel } from './tailscale-tunnel.js'
 import { step, warn } from './print.js'
-import type { TunnelPlugin } from './tunnel.js'
+import type { TunnelPlugin, TunnelPorts } from './tunnel.js'
 
 export type TunnelConfig = NonNullable<TapflowConfig['tunnel']>
 
@@ -15,7 +15,7 @@ export interface StartedTunnel {
  * Build the configured tunnel, start it, and return its public URL.
  * On startup failure the relay keeps running — returns nulls so callers fall back to local-only.
  */
-export async function startConfiguredTunnel(tunnelCfg: TunnelConfig, port: number): Promise<StartedTunnel> {
+export async function startConfiguredTunnel(tunnelCfg: TunnelConfig, ports: TunnelPorts): Promise<StartedTunnel> {
   let tunnel: TunnelPlugin
   if (tunnelCfg.provider === 'tailscale') {
     tunnel = new TailscaleTunnel({ publicUrl: tunnelCfg.publicUrl })
@@ -30,8 +30,9 @@ export async function startConfiguredTunnel(tunnelCfg: TunnelConfig, port: numbe
 
   try {
     await tunnel.setupServer()
-    const { publicUrl } = await tunnel.start(port)
+    const { publicUrl, warnings } = await tunnel.start(ports)
     step(`Tunnel ready — Public URL: ${publicUrl}`)
+    for (const message of warnings ?? []) warn(message)
     return { tunnel, publicUrl }
   } catch (err) {
     console.warn(`Tunnel failed to start: ${err instanceof Error ? err.message : String(err)}`)

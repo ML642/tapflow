@@ -90,6 +90,10 @@ What the relay enforces, from a defender's point of view:
 
 - **Authentication is required** on the REST API and on WebSocket connections. WebSocket message
   types are restricted by role, so a browser connection cannot issue agent-only control messages.
+- **Tunnel traffic is never treated as local.** Tunnel clients (rathole, `tailscale serve`) run on the
+  relay's machine and connect from loopback on someone else's behalf, so they connect to a separate
+  loopback-only tunnel port where every connection must authenticate. Only the relay port exempts
+  loopback, for the agent and CLI on the same machine.
 - **Remote agents present an `agent`-scope token**, issued by an admin, rather than being trusted by
   IP address. IP heuristics quietly become allow-all behind a Docker bridge or a reverse proxy, so
   they are not used as an authentication boundary.
@@ -125,6 +129,8 @@ If you put tapflow behind a tunnel or a public reverse proxy, you own the perime
 
 - Set a strong `JWT_SECRET` (the relay refuses to start externally without one).
 - Terminate TLS in front of the relay.
+- Point a tunnel or proxy on the relay's machine at the tunnel port (`TAPFLOW_TUNNEL_PORT`), not the
+  relay port. tapflow does this for the rathole tunnel it starts.
 - Set `TAPFLOW_TRUSTED_PROXIES` to your proxy's address so client-IP checks cannot be spoofed.
 - Issue `agent`-scope tokens to remote agents, and keep every token least-privilege.
 - Stay on the latest release for security fixes.

@@ -11,7 +11,9 @@ vi.mock('@tapflowio/relay', () => ({
   resolveRelayDisplayHost: vi.fn(() => 'localhost'),
   buildCorsOrigins: vi.fn(() => []),
   proxyWithoutPublicUrlWarning: vi.fn(() => null),
-  config: { local: { port: 4000, dataDir: '/tmp/tapflow-test', wsBackpressureBytes: 1048576, trustedProxies: [] }, relay: { url: null }, tunnel: null, tls: null },
+  resolveTunnelPort: vi.fn((explicit: number | null, relayPort: number) => explicit ?? (relayPort === 4001 ? 4002 : 4001)),
+  isInitialized: vi.fn(() => true),
+  config: { local: { port: 4000, dataDir: '/tmp/tapflow-test', wsBackpressureBytes: 1048576, trustedProxies: [], tunnelPort: null }, relay: { url: null }, tunnel: null, tls: null },
 }))
 
 const mockTunnel = { setupServer: vi.fn(), start: vi.fn(), stop: vi.fn() }
@@ -21,10 +23,10 @@ vi.mock('../../lib/rathole-tunnel.js', () => ({
 vi.mock('../../lib/tailscale-tunnel.js', () => ({
   TailscaleTunnel: vi.fn().mockImplementation(function () { return mockTunnel }),
 }))
-vi.mock('../../lib/port-available.js', () => ({ isPortFree: vi.fn() }))
+vi.mock('../../lib/port-available.js', () => ({ refuseUnlessBindable: vi.fn() }))
 
-import { RelayServer, initDb, config, createCertProvider, resolveRelayDisplayHost, buildCorsOrigins, proxyWithoutPublicUrlWarning } from '@tapflowio/relay'
-import { isPortFree } from '../../lib/port-available.js'
+import { RelayServer, initDb, config, createCertProvider, resolveRelayDisplayHost, buildCorsOrigins, proxyWithoutPublicUrlWarning, isInitialized } from '@tapflowio/relay'
+import { refuseUnlessBindable } from '../../lib/port-available.js'
 import { RatholeTunnel } from '../../lib/rathole-tunnel.js'
 import { TailscaleTunnel } from '../../lib/tailscale-tunnel.js'
 import { cmdRelayStart } from '../../commands/relay-start.js'
@@ -56,7 +58,8 @@ describe('cmdRelayStart', () => {
     vi.mocked(TailscaleTunnel).mockImplementation(function () { return mockTunnel as never })
     vi.mocked(config).tunnel = null
     vi.mocked(config).tls = null
-    vi.mocked(isPortFree).mockResolvedValue(true)
+    vi.mocked(config).local.tunnelPort = null
+    vi.mocked(refuseUnlessBindable).mockResolvedValue(undefined)
   })
 
   afterEach(() => vi.restoreAllMocks())
@@ -272,10 +275,56 @@ describe('cmdRelayStart', () => {
       expect(mockTunnel.stop).toHaveBeenCalled()
     })
 
+    // The relay port counts loopback as local; the tunnel client has to land somewhere that does not.
+    it('opens the tunnel listener and hands the tunnel both ports', async () => {
+      await cmdRelayStart({ port: 5000 })
+      expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ port: 5000, tunnelPort: 4001 }))
+      expect(mockTunnel.start).toHaveBeenCalledWith({ relayPort: 5000, tunnelPort: 4001 })
+      expect(refuseUnlessBindable).toHaveBeenCalledWith(4001, 'tunnel', '127.0.0.1')
+    })
+
+    it('moves the default tunnel port off a relay started on it', async () => {
+      await cmdRelayStart({ port: 4001 })
+      expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ port: 4001, tunnelPort: 4002 }))
+    })
+
+    it('names the tunnel port in the banner', async () => {
+      await cmdRelayStart({})
+      expect(output.join('\n')).toContain('127.0.0.1:4001')
+    })
+
+    it('refuses a tunnel port equal to the relay port before the VPS side is touched', async () => {
+      vi.mocked(config).local.tunnelPort = 4000
+      await expect(cmdRelayStart({})).rejects.toThrow(/must differ from the relay port/)
+      expect(mockTunnel.setupServer).not.toHaveBeenCalled()
+      expect(refuseUnlessBindable).not.toHaveBeenCalled()
+    })
+
+    it('a taken tunnel port stops everything before the VPS side is touched', async () => {
+      vi.mocked(refuseUnlessBindable).mockImplementation(async (port, role) => {
+        if (role === 'tunnel') throw new Error(`Tunnel port ${port} is already in use. Stop the process holding it, or set TAPFLOW_TUNNEL_PORT to a free port.`)
+      })
+      await expect(cmdRelayStart({})).rejects.toThrow(/4001.*TAPFLOW_TUNNEL_PORT/)
+      expect(mockTunnel.setupServer).not.toHaveBeenCalled()
+      expect(RelayServer).not.toHaveBeenCalled()
+    })
+
+    // Setup refuses anything that arrives through the tunnel, so the public URL cannot be where it starts.
+    it('on a relay with no admin yet, says setup happens on this machine', async () => {
+      vi.mocked(isInitialized).mockReturnValue(false)
+      await cmdRelayStart({})
+      expect(output.join('\n')).toContain('tapflow admin init')
+    })
+
+    it('says nothing about setup once an admin exists', async () => {
+      await cmdRelayStart({})
+      expect(output.join('\n')).not.toContain('tapflow admin init')
+    })
+
     it('포트가 이미 쓰이면 터널도 relay도 시작하지 않는다', async () => {
-      vi.mocked(isPortFree).mockResolvedValue(false)
+      vi.mocked(refuseUnlessBindable).mockRejectedValue(new Error('Port 4321 is already in use. Stop the existing process and try again.'))
       await expect(cmdRelayStart({ port: 4321 })).rejects.toThrow('already in use')
-      expect(isPortFree).toHaveBeenCalledWith(4321)
+      expect(refuseUnlessBindable).toHaveBeenCalledWith(4321, 'relay')
       expect(mockTunnel.setupServer).not.toHaveBeenCalled()
       expect(RelayServer).not.toHaveBeenCalled()
     })
@@ -296,10 +345,19 @@ describe('cmdRelayStart', () => {
     })
   })
 
+  // A tunnel or proxy tapflow does not manage (cloudflared, nginx) still needs somewhere to point.
+  it('opens the tunnel listener without a tunnel when its port is named', async () => {
+    vi.mocked(config).local.tunnelPort = 4100
+    await cmdRelayStart({})
+    expect(RelayServer).toHaveBeenCalledWith(expect.objectContaining({ tunnelPort: 4100 }))
+    expect(RatholeTunnel).not.toHaveBeenCalled()
+  })
+
   it('터널이 없으면 tunnel 옵션을 넘기지 않고 포트도 따로 확인하지 않는다', async () => {
     await cmdRelayStart({})
     expect(vi.mocked(RelayServer).mock.calls[0][0].tunnel).toBeUndefined()
-    expect(isPortFree).not.toHaveBeenCalled()
+    expect(vi.mocked(RelayServer).mock.calls[0][0].tunnelPort).toBeUndefined()
+    expect(refuseUnlessBindable).not.toHaveBeenCalled()
   })
 
   describe('tailscale 터널', () => {

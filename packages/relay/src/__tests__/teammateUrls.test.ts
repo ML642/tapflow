@@ -18,7 +18,7 @@ function cfg(over: { tunnel?: TapflowConfig['tunnel']; relayUrl?: string | null;
   return {
     tunnel: over.tunnel ?? null,
     relay: { url: over.relayUrl ?? null },
-    local: { port: 4000, dataDir: '.', wsBackpressureBytes: 1, trustedProxies: over.trustedProxies ?? [] },
+    local: { port: 4000, dataDir: '.', wsBackpressureBytes: 1, trustedProxies: over.trustedProxies ?? [], tunnelPort: null },
   }
 }
 
