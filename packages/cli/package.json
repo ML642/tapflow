@@ -54,7 +54,7 @@
     "postinstall": "node bin/postinstall.js"
   },
   "dependencies": {
-    "@clack/prompts": "^1.7.0",
+    "@clack/prompts": "^1.8.1",
     "@tapflowio/agent-core": "workspace:*",
     "@tapflowio/android-agent": "workspace:*",
     "@tapflowio/flow-runner": "workspace:*",
@@ -62,10 +62,10 @@
     "@tapflowio/relay": "workspace:*",
     "cac": "^6.7.14",
     "ws": "^8.21.3",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
+    "@types/node": "^22.20.2",
     "@types/ws": "^8.0.0",
     "tsx": "^4.23.13",
     "typescript": "^5.0.0",
