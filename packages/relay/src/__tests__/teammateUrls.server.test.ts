@@ -184,6 +184,17 @@ describe('teammate-facing URLs from the relay', () => {
     })
   })
 
+  describe('POST /api/v1/team/members/:id/send-reset', () => {
+    it('uses the tunnel URL the CLI detected (#794)', async () => {
+      configure({ provider: 'tailscale' }, null)
+      await withServer({ publicUrl: 'http://mac.tailnet.ts.net:4000' }, async (port) => {
+        const res = await post(port, '/api/v1/team/members/1/send-reset', {})
+        expect(res.status).toBe(200)
+        expect(mailedHref()).toMatch(/^http:\/\/mac\.tailnet\.ts\.net:4000\/reset-password\?token=/)
+      })
+    })
+  })
+
   describe('GET /api/v1/relay/host', () => {
     interface HostInfo { lanHost: string | null; port: number; publicBaseUrl: string | null; agentRelayUrl: string | null }
     const hostInfo = async (port: number): Promise<HostInfo> => {

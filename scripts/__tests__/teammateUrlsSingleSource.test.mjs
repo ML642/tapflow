@@ -18,9 +18,8 @@ import { sources } from './sourceFiles.mjs'
 //    A copied "is anything configured?" condition was the defect in `proxyConfig.ts`, and it contains no
 //    forbidden spelling at all — so a header ban alone would have passed it.
 //  - relay, spelling: the Host header and `x-forwarded-proto` are read only where allowed, per file and
-//    per pattern. `csrf.ts` compares Origin with Host and builds nothing. `passwordReset.ts` still builds
-//    a link from them; external PR #777 removes that, and the stale check below fails the moment it does,
-//    naming the entry to delete.
+//    per pattern. `csrf.ts` compares Origin with Host and builds nothing. `passwordReset.ts` must never
+//    be allowlisted: password-reset links use the configured public URL, not request headers (#777).
 //  - dashboard, structure: only `publicLink.ts` reads `/api/v1/relay/host` or the two fields it returns.
 //  - dashboard, spelling: `location` is read only as pathname/search/hash/hostname/protocol outside the
 //    files allowed below. Allow-listing the properties rather than denying origin/host/href is what
@@ -44,7 +43,7 @@ export const code = (text) =>
   text
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
     .split('\n')
-    .map((line) => line.replace(/(^|\s)\/\/.*$/, '$1'))
+    .map((line) => line.replace(/(^|\s)\/\/[^\r\n]*/, '$1'))
     .join('\n')
 
 const read = (path) => code(readFileSync(join(root, path), 'utf8'))
@@ -64,7 +63,6 @@ const HEADER_READS = [
 /** File → the header reads it is allowed, and why. */
 const HEADER_ALLOWED = {
   'packages/relay/src/lib/csrf.ts': { reads: ["headers['host']"], why: 'compares Origin with Host for same-origin; builds no link (#5)' },
-  'packages/relay/src/api/passwordReset.ts': { reads: ['headers.host', 'x-forwarded-proto'], why: 'reset link still built from headers until #777 merges' },
 }
 
 export function judgeRelayFile(path, text) {
@@ -80,8 +78,7 @@ export function judgeRelayFile(path, text) {
   }
   const stale = allowed
     .filter((name) => !HEADER_READS.find(([n]) => n === name)[1].test(text))
-    .map((name) => `${path} no longer reads ${name}: delete it from HEADER_ALLOWED` +
-      (path.endsWith('passwordReset.ts') ? ' (#777 has landed)' : ''))
+    .map((name) => `${path} no longer reads ${name}: delete it from HEADER_ALLOWED`)
   return { offenders, stale }
 }
 
@@ -118,6 +115,7 @@ describe('the rules match what they are meant to', () => {
     expect(code('const u = `${proto}//${location.host}`')).toContain('location.host')
     expect(code('const a = 1 // location.origin')).not.toContain('location.origin')
     expect(code('/* location.origin */ const b = 2')).not.toContain('location.origin')
+    expect(code('// req.headers.host\r\nexport const x = 1')).not.toContain('headers.host')
   })
 
   it('relay: flags a copied config condition and a config read through an option, not prose', () => {
@@ -145,12 +143,19 @@ describe('the rules match what they are meant to', () => {
     expect(judgeRelayFile('packages/relay/src/lib/other.ts', text).offenders).toEqual([])
   })
 
-  it('relay: an allowlisted read that disappears is reported per pattern, naming #777', () => {
-    const resetWithoutHost = "const proto = req.headers['x-forwarded-proto'] ?? 'http'"
-    const { offenders, stale } = judgeRelayFile('packages/relay/src/api/passwordReset.ts', resetWithoutHost)
+  it('relay: reports an allowlisted read that disappears', () => {
+    const { offenders, stale } = judgeRelayFile('packages/relay/src/lib/csrf.ts', 'export const noHeaders = true')
     expect(offenders).toEqual([])
-    expect(stale).toEqual([expect.stringContaining('headers.host')])
-    expect(stale[0]).toContain('#777')
+    expect(stale).toEqual([expect.stringContaining("headers['host']")])
+  })
+
+  it.each([
+    'const origin = `http://${req.headers.host}`',
+    "const proto = req.headers['x-forwarded-proto']",
+  ])('relay: flags a request-header read in passwordReset.ts after #777 — %s', (line) => {
+    const { offenders, stale } = judgeRelayFile('packages/relay/src/api/passwordReset.ts', line)
+    expect(offenders).toHaveLength(1)
+    expect(stale).toEqual([])
   })
 
   it('dashboard: flags a relay-host read outside publicLink.ts', () => {
