@@ -35,4 +35,18 @@ describe('isPortFree', () => {
     const again = await listen(port)
     await close(again)
   })
+
+  // The tunnel listener binds 127.0.0.1 alone, and a wildcard probe is not guaranteed to collide with that
+  // on macOS, so the probe has to ask about the same address.
+  it('probes the address it is given', async () => {
+    const server = net.createServer()
+    await new Promise<void>((resolve) => server.listen({ port: 0, host: '127.0.0.1' }, resolve))
+    const { port } = server.address() as net.AddressInfo
+    try {
+      expect(await isPortFree(port, '127.0.0.1')).toBe(false)
+    } finally {
+      await close(server)
+    }
+    expect(await isPortFree(port, '127.0.0.1')).toBe(true)
+  })
 })

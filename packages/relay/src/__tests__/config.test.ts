@@ -56,6 +56,34 @@ describe('relay config validation', () => {
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('local.port'))
   })
 
+  it('tunnel port is unset by default', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { config } = await import('../lib/config.js')
+    expect(config.local.tunnelPort).toBeNull()
+  })
+
+  it('TAPFLOW_TUNNEL_PORT=4100 → applied', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubEnv('TAPFLOW_TUNNEL_PORT', '4100')
+    const { config } = await import('../lib/config.js')
+    expect(config.local.tunnelPort).toBe(4100)
+    expect(exitSpy).not.toHaveBeenCalled()
+  })
+
+  it('TAPFLOW_TUNNEL_PORT=abc → exit(1) naming the key', async () => {
+    vi.stubEnv('TAPFLOW_TUNNEL_PORT', 'abc')
+    await expect(import('../lib/config.js')).rejects.toThrow('process.exit')
+    expect(exitSpy).toHaveBeenCalledWith(1)
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('local.tunnelPort'))
+  })
+
+  // 0 would ask for an ephemeral port, which nothing outside the process could be pointed at.
+  it('TAPFLOW_TUNNEL_PORT=0 → exit(1)', async () => {
+    vi.stubEnv('TAPFLOW_TUNNEL_PORT', '0')
+    await expect(import('../lib/config.js')).rejects.toThrow('process.exit')
+    expect(exitSpy).toHaveBeenCalledWith(1)
+  })
+
   it('TAPFLOW_PORT=99999 → exit(1)', async () => {
     vi.stubEnv('TAPFLOW_PORT', '99999')
     await expect(import('../lib/config.js')).rejects.toThrow('process.exit')

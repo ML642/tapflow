@@ -45,6 +45,7 @@ Secrets can also live in the `.tapflow/data/.env` file. The relay loads it first
 | Variable | Config key | Default | Description |
 |----------|------------|---------|-------------|
 | `TAPFLOW_PORT` | `local.port` | `4000` | Server port |
+| `TAPFLOW_TUNNEL_PORT` | `local.tunnelPort` | `4001` when a tunnel is configured, otherwise off | Loopback-only port for tunnel clients such as rathole, `tailscale serve` and `cloudflared`. A connection on this port counts as remote even though it comes from the relay's own machine, so it signs in or presents a token. Opens automatically with a `tunnel` config. Set it to open the port without one, for a tunnel or proxy tapflow does not start. If the relay itself uses `4001`, the default moves to `4002`. Inside a container, only something that shares the relay's network namespace can reach it. |
 | `JWT_SECRET` | — | *(auto-generated)* | JWT signing key (env only). If unset, a strong per-install secret is generated on first boot and persisted to the data directory. |
 | `TAPFLOW_DATA_DIR` | `local.dataDir` | `.tapflow/data` | DB and uploads directory (supports relative paths) |
 | `TAPFLOW_RELAY_URL` | `relay.url` | *(empty)* | Relay URL used as default by CLI commands |
@@ -76,8 +77,10 @@ openssl rand -hex 32
 Put the value in `.tapflow/data/.env` or inject it as a shell environment variable.
 :::
 
-::: warning Behind a reverse proxy, set TAPFLOW_TRUSTED_PROXIES
-If the relay runs behind a same-host reverse proxy (nginx, Caddy) and `TAPFLOW_TRUSTED_PROXIES` is left unset, the proxy's loopback address makes **every remote client look like localhost** — and localhost is unauthenticated. Set `TAPFLOW_TRUSTED_PROXIES` to the proxy's address (e.g. `127.0.0.1,::1`) and configure the proxy to forward `X-Forwarded-For`.
+::: warning Point same-host proxies and tunnels at the tunnel port
+The relay does not ask connections from its own machine to sign in. A reverse proxy (nginx, Caddy), `cloudflared` or `tailscale serve` on that machine connects from there too, so pointed at the relay port it makes **every client it forwards look local**. Point it at the tunnel port instead (`127.0.0.1:4001`, see `TAPFLOW_TUNNEL_PORT`). Every connection there counts as remote.
+
+To log and rate-limit by the real client address, also set `TAPFLOW_TRUSTED_PROXIES` to the proxy's address (e.g. `127.0.0.1,::1`) and have the proxy forward `X-Forwarded-For`. A proxy that stays on the relay port needs this setting for its clients to count as remote. A tunnel that forwards raw TCP, like rathole, adds no header, so only the tunnel port helps there.
 
 For proxied or tunneled deployments, also set a public URL (`tunnel.publicUrl` or `relay.url`). Otherwise the CORS/CSRF allowlist is loopback-only and the dashboard's cross-origin requests can be blocked.
 :::

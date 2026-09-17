@@ -180,7 +180,8 @@ tapflow is self-hosted by design — build files, device streams, and session re
 | Third-party simulator cloud | Not required |
 
 - **LAN-first** — the agent ↔ relay leg is internal traffic; the device stream never transits a third party.
-- **Authenticated by default off-host** — the relay accepts unauthenticated connections only from its own machine (`localhost`). Browsers reaching it from elsewhere sign in; agents on another machine present an `agent`-scope token.
+- **The relay is the trust boundary** — it holds accounts, builds and live device control, so whoever can reach it is who you are exposing. The agent only dials out.
+- **Authenticated by default off-host** — the relay accepts unauthenticated connections only from its own machine (`localhost`). Browsers reaching it from elsewhere sign in; agents on another machine present an `agent`-scope token. Traffic through a tunnel counts as off-host, even though the tunnel client runs on the relay's machine.
 - **PAT + roles** — Personal Access Tokens carry scopes (`builds:write` for CI uploads, `agent` for remote agents), and team roles (Admin / Developer / QA / Viewer) govern dashboard access.
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md). For the full model, read [Security & Privacy](https://www.tapflow.dev/reference/security).

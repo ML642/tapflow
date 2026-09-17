@@ -1,4 +1,4 @@
-import { RelayServer, initDb, config, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost } from '@tapflowio/relay'
+import { RelayServer, initDb, config, createCertProvider, startTlsBackgroundTasks, buildCorsOrigins, proxyWithoutPublicUrlWarning, resolveRelayDisplayHost, resolveTunnelPort, isInitialized } from '@tapflowio/relay'
 import type { TunnelRuntime } from '@tapflowio/relay'
 import { AgentRegistry } from '@tapflowio/agent-core'
 import fs from 'fs'
@@ -71,14 +71,22 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
   // What that order costs: a rathole relay listens only once its VPS setup is done, and a relay that fails
   // to start leaves a tunnel to stop. The port is checked first because rathole's setupServer restarts the
   // VPS-side server, and a second start doomed to fail on the port would take the running one's tunnel down.
+  // The tunnel listener opens with a tunnel, or on its own when its port is named for a tunnel tapflow does
+  // not manage. The co-located agent below stays on the relay port, the one place loopback means local.
   let tunnel: TunnelPlugin | null = null
   let publicUrl: string | null = null
   let tunnelRuntime: TunnelRuntime | undefined
+  let tunnelPort = config.local.tunnelPort ?? undefined
   if (config.tunnel) {
+    const ports = { relayPort: RELAY_PORT, tunnelPort: resolveTunnelPort(config.local.tunnelPort, RELAY_PORT) }
+    tunnelPort = ports.tunnelPort
     if (!(await isPortFree(RELAY_PORT))) {
       throw new Error(`Port ${RELAY_PORT} is already in use. Stop the existing process and try again.`)
     }
-    const started = await startConfiguredTunnel(config.tunnel, RELAY_PORT)
+    if (!(await isPortFree(ports.tunnelPort, '127.0.0.1'))) {
+      throw new Error(`Tunnel port ${ports.tunnelPort} is already in use. Stop the process holding it, or set TAPFLOW_TUNNEL_PORT to a free port.`)
+    }
+    const started = await startConfiguredTunnel(config.tunnel, ports)
     tunnel = started.tunnel
     tunnelRuntime = tunnelRuntimeFor(started.publicUrl, tls !== undefined)
     // The banner advertises only what the relay will hand out.
@@ -92,7 +100,7 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
   let server: RelayServer
   try {
     // Construction is inside the try too: a TLS key that does not match its cert throws here.
-    server = new RelayServer({ port: RELAY_PORT, uploadsDir: path.join(config.local.dataDir, 'uploads'), wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins: buildCorsOrigins(config, RELAY_PORT, tunnelRuntime), tls, tunnel: tunnelRuntime })
+    server = new RelayServer({ port: RELAY_PORT, uploadsDir: path.join(config.local.dataDir, 'uploads'), wsBackpressureBytes: config.local.wsBackpressureBytes, trustedProxies: config.local.trustedProxies, corsOrigins: buildCorsOrigins(config, RELAY_PORT, tunnelRuntime), tls, tunnel: tunnelRuntime, tunnelPort })
     await server.start()
   } catch (err) {
     await tunnel?.stop()
@@ -100,12 +108,18 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
   }
   const stopTls = certProvider ? startTlsBackgroundTasks(certProvider, server, config.tls) : null
   step(`Relay started on ${httpScheme}://${displayHost}:${RELAY_PORT}`)
+  if (tunnelPort !== undefined) step(`Tunnel clients connect to 127.0.0.1:${tunnelPort}`)
+  // Setup is refused to anything arriving through the tunnel, so the public URL cannot be where it starts.
+  const setupLines = publicUrl && !isInitialized()
+    ? [`First run: create the admin account on this Mac — open ${httpScheme}://localhost:${RELAY_PORT} here, or run \`tapflow admin init\`.`]
+    : []
 
   // ── 4. Agent availability check ───────────────────────────────────────────
   if (platformsToRun.length === 0) {
     banner('success', 'TAPFLOW RELAY READY', [
       `Relay  : ${httpScheme}://${displayHost}:${RELAY_PORT}`,
       ...(publicUrl ? [`Public : ${publicUrl}`] : []),
+      ...setupLines,
       'No agent environment detected — running relay only.',
       `Connect a Mac agent:  tapflow agent start --relay ${wsScheme}://${agentConnectHost}:${RELAY_PORT} --token <agent-PAT>`,
       `  Issue an 'agent'-scope token in the dashboard (Settings → Tokens).`,
@@ -139,6 +153,7 @@ export async function cmdStart(opts: StartOptions): Promise<void> {
   banner('success', 'TAPFLOW READY', [
     `Relay  : ${httpScheme}://${displayHost}:${RELAY_PORT}`,
     ...(publicUrl ? [`Public : ${publicUrl}`] : []),
+    ...setupLines,
     `Open ${publicUrl ?? `${httpScheme}://${displayHost}:${RELAY_PORT}`} in your browser.`,
     'Press Ctrl+C to stop.',
   ])

@@ -14,7 +14,7 @@ import type { ParsedInbound, ParseFailure, ParseResult } from '@tapflowio/protoc
 import { Router, json } from './router.js'
 import { requireViewAuth, requireAuth, getAuth, verifyPat } from './middleware/auth.js'
 import { classifyConnection } from './lib/connectionAuth.js'
-import { resolveClientAddress } from './lib/clientAddress.js'
+import { isTunnelIngress, markTunnelIngress, resolveClientAddress } from './lib/clientAddress.js'
 import { BuildTicketStore } from './lib/buildTickets.js'
 import { resolveCorsHeaders } from './lib/cors.js'
 import { isCsrfBlocked } from './lib/csrf.js'
@@ -190,6 +190,20 @@ type Unacked = Inbound<
 
 export class RelayServer {
   private httpServer: http.Server | https.Server
+  /**
+   * **The port tunnel clients are pointed at, and the only thing that tells their traffic apart.**
+   * rathole's client and `tailscale serve` run on this machine and connect from loopback on behalf of
+   * someone on the internet or the tailnet; rathole forwards raw TCP, so no header marks it either. On
+   * the main port such a socket is indistinguishable from `tapflow start`'s own agent, which is
+   * unauthenticated by design — so every tunnel visitor was too. Everything accepted here is remote
+   * (`resolveClientAddress`'s `viaTunnel`), whatever its address.
+   *
+   * Loopback-only, because only a tunnel client on this machine has any business here; a remote client
+   * belongs on the main port, where it is classified by address as before. Same handler, same
+   * `WebSocketServer`, same TLS material — rathole carried a TLS relay's own handshake through before
+   * this existed, and still does.
+   */
+  private tunnelServer: http.Server | https.Server | null = null
   private wss: WebSocketServer
   private sessions: SessionManager
   private publicDir: string
@@ -283,7 +297,11 @@ export class RelayServer {
     timer: ReturnType<typeof setTimeout>
   }>()
 
-  constructor(private readonly options: { port: number; publicDir?: string; uploadsDir?: string; idleTimeoutMs?: number; wsBackpressureBytes?: number; screenshotTimeoutMs?: number; uiTreeTimeoutMs?: number; trustedProxies?: string[]; corsOrigins?: string[]; tls?: { cert: string; key: string }; agentGraceMs?: number; tunnel?: TunnelRuntime }) {
+  constructor(private readonly options: { port: number; publicDir?: string; uploadsDir?: string; idleTimeoutMs?: number; wsBackpressureBytes?: number; screenshotTimeoutMs?: number; uiTreeTimeoutMs?: number; trustedProxies?: string[]; corsOrigins?: string[]; tls?: { cert: string; key: string }; agentGraceMs?: number; tunnel?: TunnelRuntime; tunnelPort?: number }) {
+    // 0 on both sides is two ephemeral ports, which is what the tests ask for.
+    if (options.tunnelPort !== undefined && options.tunnelPort !== 0 && options.tunnelPort === options.port) {
+      throw new Error(`The tunnel port (${options.tunnelPort}) must differ from the relay port. Set TAPFLOW_TUNNEL_PORT to another port.`)
+    }
     this.backpressureBytes = options.wsBackpressureBytes ?? DEFAULT_BACKPRESSURE_BYTES
     this.screenshotTimeoutMs = options.screenshotTimeoutMs ?? 10_000
     // Longer than the screenshot default: the Android agent's device-side dump
@@ -324,6 +342,25 @@ export class RelayServer {
     this.wss = new WebSocketServer({ server: this.httpServer })
     this.wss.on('connection', (ws, request) => this.handleConnection(ws, request))
     this.wss.on('error', () => { /* propagated from httpServer */ })
+
+    if (options.tunnelPort !== undefined) {
+      // Marked before anything reads it: the router hands this same request object to `handleInit`, and
+      // `handleUpgrade` passes it on to the `connection` event.
+      const tunnelHandler = (req: http.IncomingMessage, res: http.ServerResponse) => {
+        markTunnelIngress(req)
+        return handler(req, res)
+      }
+      const tunnelServer = options.tls
+        ? https.createServer({ cert: options.tls.cert, key: options.tls.key }, tunnelHandler)
+        : http.createServer(tunnelHandler)
+      tunnelServer.on('connection', (socket) => socket.setNoDelay(true))
+      // `handleUpgrade` adds the socket to `wss.clients`, so the heartbeat and `stop()` cover it.
+      tunnelServer.on('upgrade', (req: http.IncomingMessage, socket, head: Buffer) => {
+        markTunnelIngress(req)
+        this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req))
+      })
+      this.tunnelServer = tunnelServer
+    }
   }
 
   private registerRoutes(): void {
@@ -462,7 +499,7 @@ export class RelayServer {
     this.heartbeatTimer = setInterval(() => this.runHeartbeat(), HEARTBEAT_MS)
     this.heartbeatTimer.unref()
 
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       this.httpServer.once('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
           reject(new Error(`Port ${this.options.port} is already in use. Stop the existing process and try again.`))
@@ -472,7 +509,32 @@ export class RelayServer {
       })
       // Bind dual-stack (IPv4 + IPv6). A bare listen(port) binds IPv6-only on some
       // macOS/node setups, so LAN agents connecting over IPv4 (ws://<ipv4>:port) time out.
-      this.httpServer.listen({ port: this.options.port, host: '::', ipv6Only: false }, resolve)
+      this.httpServer.listen({ port: this.options.port, host: '::', ipv6Only: false }, () => resolve())
+    }).then(() => this.listenTunnel())
+  }
+
+  private listenTunnel(): Promise<void> {
+    const tunnelServer = this.tunnelServer
+    if (!tunnelServer) return Promise.resolve()
+    const port = this.options.tunnelPort ?? 0
+    return new Promise<void>((resolve, reject) => {
+      tunnelServer.once('error', (err: NodeJS.ErrnoException) => reject(
+        err.code === 'EADDRINUSE'
+          ? new Error(`Tunnel port ${port} is already in use. Stop the process holding it, or set TAPFLOW_TUNNEL_PORT to a free port.`)
+          : err,
+      ))
+      // 127.0.0.1, not `localhost`: rathole's client dials that address literally, and `tailscale serve
+      // <port>` proxies to it.
+      tunnelServer.listen({ port, host: '127.0.0.1' }, () => {
+        // The main server's later errors reach `wss`, which swallows them; nothing forwards this one's.
+        tunnelServer.on('error', (err) => logger.error(`tunnel listener error: ${String(err)}`))
+        resolve()
+      })
+    }).catch(async (err: unknown) => {
+      // A relay whose tunnel port failed must not keep serving on the main one: the caller treats this
+      // as a failed start and moves on, and the port would stay held by a server nobody stops.
+      await this.stop().catch(() => {})
+      throw err
     })
   }
 
@@ -494,16 +556,27 @@ export class RelayServer {
     // already stopped.
     for (const requester of this.networkStateRequesters.values()) requester.dispose()
     this.networkStateRequesters.clear()
-    return new Promise((resolve, reject) => {
+    const closeTunnel = new Promise<void>((resolve, reject) => {
+      // Not listening means `start()` never reached it, or its listen failed; `close()` would reject.
+      if (!this.tunnelServer?.listening) return resolve()
+      this.tunnelServer.close((err) => (err ? reject(err) : resolve()))
+    })
+    const closeMain = new Promise<void>((resolve, reject) => {
       this.wss.clients.forEach((ws) => ws.terminate())
       this.wss.close(() => {
         this.httpServer.close((err) => (err ? reject(err) : resolve()))
       })
     })
+    return Promise.all([closeMain, closeTunnel]).then(() => undefined)
   }
 
   address() {
     return this.httpServer.address()
+  }
+
+  /** The tunnel listener's address, or null when this relay was given no `tunnelPort`. */
+  tunnelAddress() {
+    return this.tunnelServer?.address() ?? null
   }
 
   // Terminate sockets that missed the previous pong; ping the rest. Covers all roles via wss.clients.
@@ -536,8 +609,10 @@ export class RelayServer {
 
   // 갱신된 cert를 재시작 없이 핫스왑한다(https 종단일 때만 의미 있음).
   updateTlsContext(material: { cert: string; key: string }): void {
-    if (this.httpServer instanceof https.Server) {
-      this.httpServer.setSecureContext({ cert: material.cert, key: material.key })
+    for (const server of [this.httpServer, this.tunnelServer]) {
+      if (server instanceof https.Server) {
+        server.setSecureContext({ cert: material.cert, key: material.key })
+      }
     }
   }
 
@@ -652,8 +727,9 @@ export class RelayServer {
     if (a === '::1' || a.startsWith('127.')) {
       logger.warn(
         'Received X-Forwarded-For from a loopback connection but TAPFLOW_TRUSTED_PROXIES is unset. ' +
-        'If the relay runs behind a same-host reverse proxy, set TAPFLOW_TRUSTED_PROXIES so the real ' +
-        'client IP is used — otherwise every proxied client is treated as localhost (unauthenticated).'
+        'If a same-host reverse proxy or `tailscale serve` forwards to this port, every client it forwards is ' +
+        'treated as localhost (unauthenticated). Point it at the tunnel port instead (TAPFLOW_TUNNEL_PORT, ' +
+        'default 4001), or set TAPFLOW_TRUSTED_PROXIES so the real client IP is used.'
       )
       this.warnedProxyMisconfig = true
     }
@@ -663,11 +739,14 @@ export class RelayServer {
     const socketAddr = this.remoteAddressOf(request)
     const xff = request.headers['x-forwarded-for']
     const forwardedFor = Array.isArray(xff) ? xff[0] : xff
-    this.warnProxyMisconfigOnce(socketAddr, forwardedFor)
+    const viaTunnel = isTunnelIngress(request)
+    // A proxy in front of the tunnel port adds the header too, and there it changes nothing about auth.
+    if (!viaTunnel) this.warnProxyMisconfigOnce(socketAddr, forwardedFor)
     const { addr, isLocal } = resolveClientAddress({
       socketAddr,
       forwardedFor,
       trustedProxies: this.options.trustedProxies ?? [],
+      viaTunnel,
     })
 
     const hasCookieAuth = getAuth(request) !== null

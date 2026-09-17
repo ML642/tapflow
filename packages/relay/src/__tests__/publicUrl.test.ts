@@ -4,7 +4,7 @@ import { buildPasswordResetUrl, passwordResetLinkWarning } from '../api/password
 
 // #6 — Host 인젝션 차단: 초대 링크 base를 Host 헤더가 아닌 설정값에서만 도출
 describe('buildInviteBaseUrl', () => {
-  const local = { port: 4000, dataDir: '.tapflow-data', wsBackpressureBytes: 1, trustedProxies: [] }
+  const local = { port: 4000, dataDir: '.tapflow-data', wsBackpressureBytes: 1, trustedProxies: [], tunnelPort: null }
 
   it('터널 공개 URL이 있으면 그것을 사용 (trailing slash 제거)', () => {
     expect(buildInviteBaseUrl({ tunnel: { provider: 'tailscale', publicUrl: 'https://mac.ts.net:4000/' }, relay: { url: null }, local }))
@@ -38,7 +38,7 @@ describe('buildInviteBaseUrl', () => {
 })
 
 describe('buildPasswordResetUrl', () => {
-  const local = { port: 4000, dataDir: '.tapflow-data', wsBackpressureBytes: 1, trustedProxies: [] }
+  const local = { port: 4000, dataDir: '.tapflow-data', wsBackpressureBytes: 1, trustedProxies: [], tunnelPort: null }
 
   it('uses the configured public URL rather than request-derived data', () => {
     expect(buildPasswordResetUrl('reset-token', {

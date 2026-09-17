@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **Clients that reach the relay through a tunnel now have to authenticate.** A rathole tunnel, and `tailscale serve` pointed at the relay port, delivered their traffic to the relay from the relay's own machine, which the relay treats as local. Browsers were signing in anyway and are unaffected. An agent or tool that connects through the tunnel URL without a token is now refused, as it already was from anywhere else. Migrate: pass an `agent`-scope token (`--token` or `TAPFLOW_AGENT_TOKEN`), or a `view` token for flows and MCP. If you run `tailscale serve 4000`, run `tailscale serve reset`, then `tailscale serve --bg 4001`.
+
+### Added
+
+- **`TAPFLOW_TUNNEL_PORT` (`local.tunnelPort`)** sets the loopback-only port that tunnel clients connect to. It opens on `4001` whenever a `tunnel` is configured. Set it to open the port for a tunnel or proxy that tapflow does not start, such as `cloudflared`. See [Configuration](https://www.tapflow.dev/reference/configuration).
+
 ### Changed
 
 - **The network filter install says what it is waiting on** ([#799](https://github.com/jo-duchan/tapflow/issues/799)). `tapflow setup ios` and `tapflow migrate net-filter` printed nothing while the install ran — up to three minutes on a new Mac, which reads as a hang rather than as work. Each step now names itself as it starts: checking what the Mac already has, taking the current filter out of the path, copying, activating, and confirming a filter came back up. The activation step warns about the macOS approval prompt before it appears, since the host binary reports that only by exiting 120 seconds later. `setup ios` reports the first check on the path where it goes on to *skip* the install as well — the common case on a Mac that is already set up, and the half of the silence nothing inside the installer could reach.
@@ -18,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Removing the network extension is described in steps that work** ([#799](https://github.com/jo-duchan/tapflow/issues/799)). `tapflow doctor ios`, `tapflow setup ios`, `tapflow migrate net-filter` and the network control and troubleshooting guides all said to run `systemextensionsctl uninstall`, which macOS refuses whenever System Integrity Protection is on, as it is on almost every Mac. They now say to switch the filter off first, then remove the extension in System Settings → General → Login Items & Extensions → Network Extensions, then restart the Mac to finish. The guide also says to stop tapflow on that Mac first, since a running iOS agent switches the filter back on. When the app is already gone from `/Applications`, the commands print the exact switch-off command, which uses the binary inside the package.
 
 - **Member password-reset emails now use the configured public URL.** The reset endpoint previously constructed its link from the request's `Host` and `X-Forwarded-Proto` headers, which a proxy can pass through from an untrusted request. It now uses the same configured URL selection as invitations: public tunnel URL first, then the configured relay URL, then the local fallback.
+
+### Security
+
+- **Visitors of a tunnel URL no longer skip sign-in.** The rathole tunnel handed every public connection to the relay from `127.0.0.1`, and `tailscale serve 4000` did the same for tailnet members. The relay does not ask local connections to sign in, so device control and agent registration were open to anyone who had the URL. `TAPFLOW_TRUSTED_PROXIES` could not close this, because rathole forwards raw TCP and adds no header. The relay now opens a separate loopback-only tunnel port, and nothing that arrives there counts as local. `tapflow start` and `tapflow relay start` point rathole at that port and refuse to start when it is taken. They warn when `tailscale serve` still forwards to the relay port, and when `tailscaled` runs in userspace-networking mode, where no port can tell tailnet visitors apart. They also stop rathole clients left running by a tapflow process that exited without cleaning up. On a relay with no admin yet, they say to create the admin on the relay's machine, because setup is refused through the tunnel.
 
 ## [0.22.0] - 2026-09-16
 

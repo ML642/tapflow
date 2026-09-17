@@ -46,6 +46,7 @@ Here is what tapflow handles and what you manage as the infrastructure operator.
 
 **tapflow provides:**
 - PAT authentication and scope enforcement on every endpoint
+- Sign-in for every connection from outside the relay's machine, including tunnel traffic, which arrives on a separate loopback port
 - Session isolation between teams — no access to another team's builds or streams
 - No outbound data transmission to external services
 

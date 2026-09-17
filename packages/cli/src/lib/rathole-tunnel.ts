@@ -1,10 +1,10 @@
-import { spawn, type ChildProcess } from 'child_process'
+import { execFileSync, spawn, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { sshExec, scpUpload, type SshConfig } from './ssh.js'
 import { downloadBinary } from './download-binary.js'
-import type { TunnelPlugin } from './tunnel.js'
+import type { TunnelPlugin, TunnelPorts, TunnelStartResult } from './tunnel.js'
 
 const REMOTE_DIR = '/tmp/tapflow'
 const REMOTE_BINARY = `${REMOTE_DIR}/rathole`
@@ -22,15 +22,54 @@ function serverToml(serverAddr: string, token: string): string {
   ].join('\n')
 }
 
-function clientToml(serverAddr: string, token: string, relayPort: number): string {
+// The tunnel port, never the relay port: the relay counts a loopback connection on its own port as local
+// and asks it for nothing, and every visitor of the public URL arrives here from loopback.
+function clientToml(serverAddr: string, token: string, tunnelPort: number): string {
   return [
     '[client]',
     `remote_addr = "${serverAddr}"`,
     '',
     '[client.services.tapflow-relay]',
     `token = "${token}"`,
-    `local_addr = "127.0.0.1:${relayPort}"`,
+    `local_addr = "127.0.0.1:${tunnelPort}"`,
   ].join('\n')
+}
+
+const CLIENT_CONFIG_PREFIX = 'tapflow-rathole-client-'
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    // EPERM: it exists and belongs to someone else.
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * Stops rathole clients whose tapflow process is gone.
+ *
+ * The client is spawned attached, and only SIGINT stops it with its parent — a `kill <pid>` or a crash
+ * leaves it running and reconnecting to the VPS, where it takes turns with the new client for the same
+ * service. One left by a version before the tunnel port forwards to the relay port, where its visitors
+ * count as local. The owner's pid is in the config file name; a client whose owner is still alive is
+ * another tapflow's, and is left alone.
+ */
+function stopOrphanedClients(): void {
+  let listing: string
+  try {
+    listing = execFileSync('ps', ['-Ao', 'pid=,command='], { encoding: 'utf-8' })
+  } catch {
+    return
+  }
+  const pattern = new RegExp(`^\\s*(\\d+)\\s+\\S*rathole\\S*\\s+--client\\s+\\S*${CLIENT_CONFIG_PREFIX}(\\d+)\\.toml\\s*$`)
+  for (const line of listing.split('\n')) {
+    const match = pattern.exec(line)
+    if (!match) continue
+    if (isAlive(Number(match[2]))) continue
+    try { process.kill(Number(match[1])) } catch { /* already gone */ }
+  }
 }
 
 export interface RatholeTunnelOptions {
@@ -89,14 +128,15 @@ export class RatholeTunnel implements TunnelPlugin {
     )
   }
 
-  async start(relayPort: number): Promise<{ publicUrl: string }> {
+  async start({ tunnelPort }: TunnelPorts): Promise<TunnelStartResult> {
     if (!this.opts.token) throw new Error('TAPFLOW_TUNNEL_TOKEN is required for tunnel mode')
     if (!this.opts.serverAddr) throw new Error('tunnel.serverAddr is required in tapflow.config.json')
 
     const darwinBinary = await downloadBinary('darwin', process.arch)
 
-    const toml = clientToml(this.opts.serverAddr, this.opts.token, relayPort)
-    this.clientConfigPath = path.join(os.tmpdir(), `tapflow-rathole-client-${process.pid}.toml`)
+    stopOrphanedClients()
+    const toml = clientToml(this.opts.serverAddr, this.opts.token, tunnelPort)
+    this.clientConfigPath = path.join(os.tmpdir(), `${CLIENT_CONFIG_PREFIX}${process.pid}.toml`)
     fs.mkdirSync(path.dirname(this.clientConfigPath), { recursive: true })
     fs.writeFileSync(this.clientConfigPath, toml, 'utf-8')
 

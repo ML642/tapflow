@@ -45,6 +45,7 @@
 | 환경변수 | Config 키 | 기본값 | 설명 |
 |---------|-----------|--------|------|
 | `TAPFLOW_PORT` | `local.port` | `4000` | 서버 포트 |
+| `TAPFLOW_TUNNEL_PORT` | `local.tunnelPort` | 터널 설정이 있으면 `4001`, 없으면 꺼짐 | rathole, `tailscale serve`, `cloudflared` 같은 터널 클라이언트가 연결하는 loopback 전용 포트. 릴레이 머신 안에서 온 연결이라도 이 포트로 들어오면 원격으로 보므로, 로그인하거나 토큰을 내야 합니다. `tunnel` 설정이 있으면 자동으로 열립니다. tapflow가 띄우지 않는 터널이나 프록시에 쓰려면 이 값을 설정해 여세요. 릴레이가 `4001`을 쓰면 기본값은 `4002`로 바뀝니다. 컨테이너 안에서는 릴레이와 네트워크 네임스페이스를 공유하는 프로세스만 연결할 수 있습니다. |
 | `JWT_SECRET` | — | *(자동 생성)* | JWT 서명 키 (환경변수 전용). 설정하지 않으면 최초 부팅 시 강력한 per-install 시크릿을 자동으로 생성해 데이터 디렉토리에 저장합니다. |
 | `TAPFLOW_DATA_DIR` | `local.dataDir` | `.tapflow/data` | DB·업로드 디렉토리 (상대 경로 지원) |
 | `TAPFLOW_RELAY_URL` | `relay.url` | *(비어있음)* | CLI 명령어의 기본 relay URL |
@@ -78,8 +79,10 @@ openssl rand -hex 32
 생성한 값은 `.tapflow/data/.env`에 적거나 셸 환경변수로 주입합니다.
 :::
 
-::: warning 리버스 프록시 뒤에서는 TAPFLOW_TRUSTED_PROXIES를 설정하세요
-릴레이를 같은 호스트의 리버스 프록시(nginx, Caddy) 뒤에서 운영하면서 `TAPFLOW_TRUSTED_PROXIES`를 비워 두면, 프록시의 loopback 주소 때문에 **모든 원격 클라이언트가 localhost로 취급**됩니다. localhost는 무인증이므로 외부에 그대로 노출됩니다. 프록시 주소(예: `127.0.0.1,::1`)를 `TAPFLOW_TRUSTED_PROXIES`에 설정하고, 프록시가 `X-Forwarded-For`를 전달하도록 구성하세요.
+::: warning 같은 호스트의 프록시와 터널은 터널 포트로 연결하세요
+릴레이는 자기 머신에서 온 연결에 로그인을 요구하지 않습니다. 같은 머신의 리버스 프록시(nginx, Caddy), `cloudflared`, `tailscale serve`도 그 머신 안에서 연결하므로, 릴레이 포트로 연결하면 **전달하는 모든 클라이언트가 로컬로 보입니다**. 대신 터널 포트(`127.0.0.1:4001`, `TAPFLOW_TUNNEL_PORT` 참고)로 연결하세요. 이 포트의 연결은 모두 원격으로 봅니다.
+
+실제 클라이언트 주소로 로그를 남기고 요청 제한을 적용하려면 `TAPFLOW_TRUSTED_PROXIES`에 프록시 주소(예: `127.0.0.1,::1`)도 설정하고 프록시가 `X-Forwarded-For`를 전달하도록 구성하세요. 릴레이 포트에 그대로 연결하는 프록시라면 이 설정이 있어야 클라이언트를 원격으로 봅니다. rathole처럼 TCP를 그대로 넘기는 터널은 헤더를 붙이지 않으므로 터널 포트를 써야 합니다.
 
 프록시나 터널로 노출하는 경우 공개 URL(`tunnel.publicUrl` 또는 `relay.url`)도 함께 설정하세요. 설정하지 않으면 CORS/CSRF 허용 목록이 loopback만 남아, 대시보드의 cross-origin 요청이 차단될 수 있습니다.
 :::
