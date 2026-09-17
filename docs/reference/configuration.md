@@ -78,7 +78,7 @@ Put the value in `.tapflow/data/.env` or inject it as a shell environment variab
 :::
 
 ::: warning Point same-host proxies and tunnels at the tunnel port
-The relay does not ask connections from its own machine to sign in. A reverse proxy (nginx, Caddy), `cloudflared` or `tailscale serve` on that machine connects from there too, so pointed at the relay port it makes **every client it forwards look local**. Point it at the tunnel port instead (`127.0.0.1:4001`, see `TAPFLOW_TUNNEL_PORT`). Every connection there counts as remote.
+The relay does not ask connections that reach it over loopback to sign in. A reverse proxy (nginx, Caddy), `cloudflared` or `tailscale serve` does exactly that when it runs beside the relay: on the same machine for a native install, or in the relay's own network namespace for a container. Pointed at the relay port, it makes **every client it forwards look local**. Point it at the tunnel port instead (`127.0.0.1:4001`, see `TAPFLOW_TUNNEL_PORT`). Every connection there counts as remote. A proxy on another host is remote already and needs no change, and that includes one reaching a container over Docker's bridge.
 
 To log and rate-limit by the real client address, also set `TAPFLOW_TRUSTED_PROXIES` to the proxy's address (e.g. `127.0.0.1,::1`) and have the proxy forward `X-Forwarded-For`. A proxy that stays on the relay port needs this setting for its clients to count as remote. A tunnel that forwards raw TCP, like rathole, adds no header, so only the tunnel port helps there.
 
