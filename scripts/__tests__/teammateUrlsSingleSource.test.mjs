@@ -43,7 +43,7 @@ export const code = (text) =>
   text
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
     .split('\n')
-    .map((line) => line.replace(/(^|\s)\/\/.*$/, '$1'))
+    .map((line) => line.replace(/(^|\s)\/\/[^\r\n]*/, '$1'))
     .join('\n')
 
 const read = (path) => code(readFileSync(join(root, path), 'utf8'))
@@ -78,8 +78,7 @@ export function judgeRelayFile(path, text) {
   }
   const stale = allowed
     .filter((name) => !HEADER_READS.find(([n]) => n === name)[1].test(text))
-    .map((name) => `${path} no longer reads ${name}: delete it from HEADER_ALLOWED` +
-      (path.endsWith('passwordReset.ts') ? ' (#777 has landed)' : ''))
+    .map((name) => `${path} no longer reads ${name}: delete it from HEADER_ALLOWED`)
   return { offenders, stale }
 }
 
@@ -116,6 +115,7 @@ describe('the rules match what they are meant to', () => {
     expect(code('const u = `${proto}//${location.host}`')).toContain('location.host')
     expect(code('const a = 1 // location.origin')).not.toContain('location.origin')
     expect(code('/* location.origin */ const b = 2')).not.toContain('location.origin')
+    expect(code('// req.headers.host\r\nexport const x = 1')).not.toContain('headers.host')
   })
 
   it('relay: flags a copied config condition and a config read through an option, not prose', () => {

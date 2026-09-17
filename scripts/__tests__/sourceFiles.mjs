@@ -43,7 +43,7 @@ export function sources(dir, out = []) {
     if (e.isDirectory()) {
       if (!SKIP_DIRS.has(e.name)) sources(join(abs, e.name), out)
     } else if (/\.(ts|tsx)$/.test(e.name)) {
-      out.push(join(abs, e.name).slice(repoRoot.length + 1))
+      out.push(join(abs, e.name).slice(repoRoot.length + 1).replaceAll('\\', '/'))
     }
   }
   return out

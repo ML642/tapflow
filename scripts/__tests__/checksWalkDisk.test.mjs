@@ -90,7 +90,7 @@ describe('static checks enumerate the tree from disk, not from git', () => {
     for (const p of modules) {
       const src = code(p)
       if (!/\bsources\s*\(/.test(src)) continue
-      if (relative(root, p) === 'scripts/__tests__/sourceFiles.mjs') continue // it *is* the walk
+      if (relative(root, p).replaceAll('\\', '/') === 'scripts/__tests__/sourceFiles.mjs') continue // it *is* the walk
       if (!/from\s+'\.\/sourceFiles\.mjs'/.test(src)) wrong.push(relative(root, p))
     }
     expect(
@@ -115,7 +115,7 @@ describe('static checks enumerate the tree from disk, not from git', () => {
       writeFileSync(join(dir, 'brandNew.ts'), 'export const x = 1\n')
       const rel = relative(root, dir)
 
-      expect(sources(rel)).toContain(join(rel, 'brandNew.ts'))
+      expect(sources(rel)).toContain(join(rel, 'brandNew.ts').replaceAll('\\', '/'))
       // And git genuinely cannot see it, so the two disagree — which is the whole finding.
       expect(execFileSync('git', ['ls-files', rel], { cwd: root, encoding: 'utf8' }).trim()).toBe('')
     } finally {
@@ -143,7 +143,10 @@ describe('static checks enumerate the tree from disk, not from git', () => {
       writeFileSync(join(dir, 'types.d.ts'), 'export declare const w: number\n')
 
       const rel = relative(root, dir)
-      expect(sources(rel).sort()).toEqual([join(rel, 'types.d.ts'), join(rel, 'visible.ts')])
+      expect(sources(rel).sort()).toEqual([
+        join(rel, 'types.d.ts').replaceAll('\\', '/'),
+        join(rel, 'visible.ts').replaceAll('\\', '/'),
+      ])
       expect(SKIP_DIRS.has('__tests__')).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })

@@ -379,7 +379,7 @@ export class RelayServer {
     this.router.post('/api/v1/team/invite', (req, res) => handleInvite(req, res, this.options.tunnel))
     this.router.patch('/api/v1/team/members/:id', handleUpdateMember)
     this.router.delete('/api/v1/team/members/:id', handleDeleteMember)
-    this.router.post('/api/v1/team/members/:id/send-reset', handleSendMemberReset)
+    this.router.post('/api/v1/team/members/:id/send-reset', (req, res, params) => handleSendMemberReset(req, res, params, this.options.tunnel))
 
     // tokens
     this.router.get('/api/v1/tokens', handleListTokens)

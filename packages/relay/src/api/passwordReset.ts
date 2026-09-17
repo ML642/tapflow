@@ -7,22 +7,26 @@ import { makePasswordHash } from './auth.js'
 import { sendMail } from '../lib/mailer.js'
 import { json, readJson } from '../router.js'
 import { config, type TapflowConfig } from '../lib/config.js'
-import { buildInviteBaseUrl } from '../lib/publicUrl.js'
+import { buildInviteBaseUrl, type TunnelRuntime } from '../lib/publicUrl.js'
 
 const logger = createLogger('relay:password-reset')
 const INSECURE_RESET_LINK_WARNING =
   'Password-reset email uses insecure HTTP. Reset tokens may be exposed in transit; configure HTTPS with tunnel.publicUrl or relay.url.'
 let warnedInsecureResetLink = false
 
-export function buildPasswordResetUrl(token: string, cfg: Pick<TapflowConfig, 'tunnel' | 'relay' | 'local'>): string {
-  return `${buildInviteBaseUrl(cfg)}/reset-password?token=${token}`
+export function buildPasswordResetUrl(
+  token: string,
+  cfg: Pick<TapflowConfig, 'tunnel' | 'relay' | 'local'>,
+  tunnel?: TunnelRuntime,
+): string {
+  return `${buildInviteBaseUrl(cfg, tunnel)}/reset-password?token=${token}`
 }
 
 export function passwordResetLinkWarning(url: string): string | null {
   return /^https:\/\//i.test(url) ? null : INSECURE_RESET_LINK_WARNING
 }
 
-export async function sendPasswordResetEmail(userId: number): Promise<boolean> {
+export async function sendPasswordResetEmail(userId: number, tunnel?: TunnelRuntime): Promise<boolean> {
   const db = getDb()
   const user = db.prepare('SELECT id, email FROM users WHERE id = ?').get(userId) as { id: number; email: string } | undefined
   if (!user) return false
@@ -32,7 +36,7 @@ export async function sendPasswordResetEmail(userId: number): Promise<boolean> {
 
   db.prepare('INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (?, ?, ?)').run(userId, token, expiresAt)
 
-  const link = buildPasswordResetUrl(token, config)
+  const link = buildPasswordResetUrl(token, config, tunnel)
   const warning = passwordResetLinkWarning(link)
   if (warning !== null && !warnedInsecureResetLink) {
     logger.warn(warning)
@@ -81,7 +85,8 @@ export async function handleDoReset(req: http.IncomingMessage, res: http.ServerR
 export async function handleSendMemberReset(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  params: Record<string, string>
+  params: Record<string, string>,
+  tunnel?: TunnelRuntime,
 ): Promise<void> {
   const auth = requireRole(req, res, ['Admin'])
   if (!auth) return
@@ -90,7 +95,7 @@ export async function handleSendMemberReset(
   const member = db.prepare('SELECT id FROM users WHERE id = ?').get(params.id) as { id: number } | undefined
   if (!member) return json(res, 404, { error: 'Member not found' })
 
-  const emailSent = await sendPasswordResetEmail(member.id)
+  const emailSent = await sendPasswordResetEmail(member.id, tunnel)
 
   json(res, 200, { ok: true, emailSent })
 }
