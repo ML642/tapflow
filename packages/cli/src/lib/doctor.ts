@@ -3,7 +3,9 @@ import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'no
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { isFilterEnforcing, isNetFilterCurrent, isNewer, readNetFilterState, shippedHookPath } from './net-filter.js'
+import {
+  isFilterEnforcing, isNetFilterCurrent, isNewer, readNetFilterState, removalSteps, shippedHookPath,
+} from './net-filter.js'
 
 /**
  * How long any one probe may take before `doctor` treats it as unanswerable.
@@ -106,7 +108,7 @@ function buildNetFilterChecks(): DoctorCheck[] {
         label: 'Network filter',
         ok: false,
         warn: true,
-        detail: `Running ${s.activatedExt}, but the app it came from is gone from /Applications. Reinstall it from the tapflow whose version matches, or clear it with: systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext`,
+        detail: `Running ${s.activatedExt}, but the app it came from is gone from /Applications. Reinstall it from the tapflow whose version matches, or clear it: ${removalSteps().join('; ')}.`,
       }]
     }
     return [{

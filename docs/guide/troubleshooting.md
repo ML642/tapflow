@@ -219,11 +219,25 @@ tapflow migrate net-filter
 
 ### 2. Approve it
 
-Requesting the install brings up a macOS approval prompt.
+Requesting the install brings up a macOS approval prompt. Choose **Open System Settings**. The highlighted **OK** only closes the prompt and approves nothing.
 
 Go to **System Settings → General → Login Items & Extensions → Network Extensions** and switch the tapflow entry on. (An administrator password is required.)
 
 Approval happens at the Mac. macOS offers no path a browser could click instead.
+
+**The command can open the approval screen for you.** When this Mac has no approved tapflow extension, it asks before the install starts whether to open the screen when macOS asks. Say yes and the screen opens as soon as macOS starts waiting; switch TapflowNetFilter on there and the install finishes. macOS does not show its prompt again for an extension that is already waiting, so on a rerun this screen is the quickest way there.
+
+It asks only when both its input and output are a terminal, so a pipe or a redirect stops it from asking even in one.
+
+**Missing the first two minutes is not the end of it.** The install waits up to two minutes for approval. If the entry is not switched on by then, and the command can ask and you did not decline its offer, it waits up to two more minutes and switches the filter on once the entry is on. If it did not ask up front, because macOS was not expected to ask (replacing an approved extension, for instance), it asks at this point whether to open the screen.
+
+Switching the filter on can briefly drop connections this Mac already has open, SSH sessions included — if you are connected over SSH, run it at the Mac. If macOS asks whether to allow tapflow to filter network content when it switches on, allow it.
+
+If no screen appears, go there by the path above. The command cannot tell whether the window opened, so it shows the path alongside.
+
+If you declined, or ran it where it cannot ask, the command ends still waiting for approval unless you approve it yourself within the first two minutes. A declined offer is not repeated. Not switching it on within the two extra minutes ends the same way. Approve it and run the same command once more. That run switches the filter on.
+
+If a device came into use during the two extra minutes (a simulator booted, say), it stops without switching the filter on. It names what it found; stop that and run the command again. An approval within the first two minutes lets the extension switch the filter on by itself, so the only device check on that path is the one when the install starts.
 
 ### 3. When a restart is needed
 
@@ -246,11 +260,13 @@ It reports four things separately: whether it is **installed**, whether it is **
 | The extension, with no restart mentioned | `tapflow migrate net-filter` |
 | This Mac is set up for a newer tapflow | Upgrade this checkout instead. Migrate refuses that direction, because replacing a newer filter breaks the agent depending on it |
 
-**If the app is gone but the extension is still running, tapflow refuses to reinstall.** The extension's version says which filter is running, not which app it came from, so nothing can tell whether that Mac was set up by a newer tapflow than yours — and installing over it would replace a working filter someone else may depend on. Reinstall from the tapflow whose version matches, or clear the extension and start again:
+**If the app is gone but the extension is still running, tapflow refuses to reinstall.** The extension's version says which filter is running, not which app it came from, so nothing can tell whether that Mac was set up by a newer tapflow than yours — and installing over it would replace a working filter someone else may depend on. Reinstall from the tapflow whose version matches, or clear the extension and start again. `tapflow doctor ios` and the command that refused both print the steps:
 
-```sh
-systemextensionsctl uninstall 6FBS3QP893 dev.tapflow.netfilter.ext
-```
+1. Switch the filter off. The app is gone, so this uses the binary inside the package, and the command prints its exact path.
+2. Click the ⋯ button beside TapflowNetFilter and choose **Delete Extension**, in System Settings → General → Login Items & Extensions → Network Extensions. This works with the app already gone from `/Applications`.
+3. Restart the Mac. The removal finishes then.
+
+`systemextensionsctl uninstall` is not an option: macOS refuses it on any Mac with System Integrity Protection (SIP) on.
 
 ### If it still does not work
 
@@ -261,7 +277,7 @@ Installing ends with a distinct code per kind of failure.
 | 1 | Activation failed |
 | 2 | Could not read the configuration |
 | 3 | Could not save the configuration |
-| 4 | Not approved within 120 seconds. Approve it in System Settings and run it again |
+| 4 | Not approved within 120 seconds. With input and output both on a terminal, the command keeps waiting, first asking whether to open the approval screen if it has not asked yet. If it is still not switched on after that, it could not ask, or the offer was declined, the command ends waiting for approval: approve it in System Settings and run it again |
 | 5 | The Mac has to restart for this to finish |
 | 6 | The system extension manager gave no answer within 45 seconds |
 | 7 | The running filter did not answer |

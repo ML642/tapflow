@@ -7,18 +7,27 @@ vi.mock('@clack/prompts', () => ({ confirm: vi.fn(), text: vi.fn(), isCancel: vi
 // Off, so the audio step neither prompts nor fires a real macOS permission request from a test run.
 vi.mock('@tapflowio/ios-agent', () => ({ isAudioSupported: vi.fn(() => false), requestAudioPermission: vi.fn() }))
 
-import { execFileSync, execSync, spawnSync } from 'node:child_process'
+import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process'
 import { accessSync, chmodSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { confirm } from '@clack/prompts'
+import { confirm, isCancel } from '@clack/prompts'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
-import { installNetFilter, readNetFilterState, extensionBundle, isFilterEnforcing, NET_FILTER_APP } from '../../lib/net-filter.js'
+import {
+  installNetFilter, readNetFilterState, extensionBundle, isFilterEnforcing, NET_FILTER_APP,
+  INSTALL_STAGE_MESSAGE, type InstallStage,
+  followThroughApproval, APPROVAL_SHEET_URL, APPROVAL_MESSAGE, APPROVAL_WAIT_MS,
+  type ApprovalDeps, type NeedsApproval, removalSteps, shellQuote,
+  offerApprovalUpFront, SHEET_OPENER_SCRIPT, SHEET_OPENER_LOOKS,
+} from '../../lib/net-filter.js'
 import { runDoctorChecks } from '../../lib/doctor.js'
 import { runSetupIos } from '../../lib/setup.js'
 
 const mockExecFileSync = vi.mocked(execFileSync)
 const mockSpawnSync = vi.mocked(spawnSync)
+const mockSpawn = vi.mocked(spawn)
+/** The detached process that opens the approval sheet once macOS is waiting. */
+const openerRuns = () => mockSpawn.mock.calls.filter((c) => String(c[0]) === '/bin/sh')
 const mockExistsSync = vi.mocked(existsSync)
 const mockChmodSync = vi.mocked(chmodSync)
 const mockReaddirSync = vi.mocked(readdirSync)
@@ -31,8 +40,10 @@ const mockConfirm = vi.mocked(confirm)
 const filterPrompts = () =>
   mockConfirm.mock.calls.filter((c) => /network filter/i.test(String((c[0] as { message?: string })?.message ?? '')))
 
+/** A whole terminal: the approval offer needs stdin to be one as well — see `terminalApprovalDeps`. */
 function setTTY(v: boolean | undefined) {
   Object.defineProperty(process.stdout, 'isTTY', { value: v, configurable: true })
+  Object.defineProperty(process.stdin, 'isTTY', { value: v, configurable: true })
 }
 
 /**
@@ -143,11 +154,19 @@ function machine(opts: {
    *  killed by an activation leaves a file that is still inside the freshness window, and a
    *  confirmation that only looks at freshness reads it as success. */
   heartbeatAgeSeconds?: number
+  /** Someone switching tapflow on partway through a run: the extension reads as `activated` until
+   *  `systemextensionsctl` has been asked this many times, and as this build's version after. Counted
+   *  across the whole test, so every probe before the wait moves the moment — callers say which. */
+  approvedAfterLooks?: number
+  /** `booted` shows up only once `systemextensionsctl` has been asked more than this many times — a
+   *  simulator started *during* the approval wait rather than before the command ran. */
+  bootedAfterListLooks?: number
 }) {
   const {
     shipped = SHIPPED, installed = SHIPPED, activated = SHIPPED, activatedState,
     shippedExt = shipped,
-    filterRunning = true, booted = [], relayUp = false, heartbeatAgeSeconds = 0,
+    filterRunning = true, booted = [], relayUp = false, heartbeatAgeSeconds = 0, approvedAfterLooks,
+    bootedAfterListLooks,
   } = opts
   mockReadFileSync.mockImplementation((p) => {
     if (String(p) === FILTER_STATE_FILE) {
@@ -168,10 +187,16 @@ function machine(opts: {
     if (s === '/Applications/Xcode.app') return true
     return false
   })
+  let listLooks = 0
   mockExecFileSync.mockImplementation((cmd, args) => {
-    if (String(cmd).endsWith('/systemextensionsctl')) return listing(activated, activatedState) as never
+    if (String(cmd).endsWith('/systemextensionsctl')) {
+      listLooks++
+      const approved = approvedAfterLooks !== undefined && listLooks > approvedAfterLooks
+      return listing(approved ? shippedExt : activated, activatedState) as never
+    }
     if (String(cmd) === '/usr/bin/xcrun') {
-      return JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-0': booted.map((name) => ({ name, state: 'Booted' })) } }) as never
+      const up = bootedAfterListLooks === undefined || listLooks > bootedAfterListLooks ? booted : []
+      return JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-0': up.map((name) => ({ name, state: 'Booted' })) } }) as never
     }
     if (String(cmd) === '/usr/sbin/lsof') {
       // `lsof` exits non-zero when nothing holds the port, and `execFileSync` turns that into a throw.
@@ -815,6 +840,644 @@ describe('net filter — installing', () => {
   })
 })
 
+describe('net filter — saying what the install is waiting on', () => {
+  onMac()
+  beforeEach(() => { vi.resetAllMocks() })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  /**
+   * **Each stage is stamped with how many spawns had run when it was reported**, and that stamp is
+   * the whole point.
+   *
+   * A list of stages on its own cannot tell a report made *before* a call from one made after it —
+   * both leave the stages in the same order, and the second names a wait the person has already sat
+   * through, which is the defect (#799). Pairing each stage with the spawn count pins the
+   * interleaving without wrapping the spawn mock, which would mean reimplementing `hostExits`'s
+   * three branches here to keep them in step.
+   */
+  function traced(code: number) {
+    hostExits(code)
+    const events: string[] = []
+    /**
+     * **The spawn count alone is blind to the two longest waits here**, which is why every mark
+     * carries three counters. `readNetFilterState` is `execFileSync` (four probes, 10s each) and
+     * `waitForEnforcing` is `Atomics.wait` plus `existsSync`/`readFileSync` — neither moves
+     * `spawnSync`, so `checking` and `confirming` could each be reported *after* the wait they name
+     * and the stamp would not change by one character.
+     */
+    const marks: { stage: InstallStage; spawns: number; reads: number; stats: number }[] = []
+    return {
+      events,
+      marks,
+      onProgress: (s: InstallStage) => {
+        marks.push({
+          stage: s,
+          spawns: mockSpawnSync.mock.calls.length,
+          reads: mockExecFileSync.mock.calls.length,
+          stats: mockExistsSync.mock.calls.length,
+        })
+        events.push(`${s}@${mockSpawnSync.mock.calls.length}`)
+      },
+    }
+  }
+
+  /** A Mac with no filter at all, which is the path a first install takes. */
+  function freshMac() {
+    machine({ installed: null, activated: null })
+    bundleOnDisk()
+  }
+
+  it('reports every stage before the call it describes, not after', () => {
+    // The mutation: move any `onProgress` call below its `spawnSync`. The stage list alone would
+    // still be in order; this ordering is what fails.
+    freshMac()
+    const { events, marks, onProgress } = traced(0)
+    installNetFilter({ confirmDeadlineMs: 0, onProgress })
+    // Both sequences, because either alone can be right while they interleave wrongly.
+    expect(spawnOrder()).toEqual(['--off', 'ditto', '--off', '--install'])
+    expect(events).toEqual([
+      'checking@0',    // before `readNetFilterState`, which spawns nothing but is not free
+      'disabling@0',   // before the pre-copy `--off`
+      'copying@1',     // after that `--off`, before `ditto`
+      'activating@2',  // after `ditto`, before the gate `--off` and `--install`
+      'confirming@4',  // after both, before `waitForEnforcing`
+    ])
+
+    // **The two stages the spawn count cannot speak for.** Order is pinned above; these pin that the
+    // wait each one names had not happened yet. Without them, moving either report below its wait
+    // leaves all 386 tests green — the same defect as moving `copying` below `ditto`, which the
+    // sequence above does catch, only invisible because the wait is not a spawn.
+    expect(marks[0].stage).toBe('checking')
+    expect(marks[0].reads, '`checking` was reported after the probe it names').toBe(0)
+    expect(mockExecFileSync.mock.calls.length, 'the probe never ran, so the mark proves nothing')
+      .toBeGreaterThan(0)
+
+    expect(marks[4].stage).toBe('confirming')
+    expect(mockExistsSync.mock.calls.length, '`confirming` was reported after the wait it names')
+      .toBeGreaterThan(marks[4].stats)
+  })
+
+  it('says nothing extra, and nothing different, when no callback is given', () => {
+    // Optional by design — two commands and ~50 call sites in this file predate it. The outcome must
+    // not depend on whether anyone is listening.
+    freshMac()
+    hostExits(0)
+    const withoutCb = installNetFilter({ confirmDeadlineMs: 0 })
+    const orderWithout = spawnOrder()
+    vi.resetAllMocks()
+    freshMac()
+    hostExits(0)
+    const withCb = installNetFilter({ confirmDeadlineMs: 0, onProgress: () => {} })
+    expect(withCb).toEqual(withoutCb)
+    expect(withCb).toEqual({ status: 'installed-unconfirmed' })
+    // **Not only the outcome.** A reporter that also changed what the install *did* would leave the
+    // returned object identical and still be a different install.
+    expect(spawnOrder()).toEqual(orderWithout)
+  })
+
+  it('does not say it is confirming on a path that never waits', () => {
+    // Exit 4 dies before `configureFilter`, so there is no provider to come back and nothing to
+    // watch for. The mutation: hoist `onProgress('confirming')` out of the `case 0` block.
+    freshMac()
+    // `4` as a literal, the way the exit-code cases above name theirs — the constant is private to
+    // `net-filter.ts`, and exporting it to spell it here would widen that module's surface for a test.
+    const { events, onProgress } = traced(4)
+    expect(installNetFilter({ onProgress })).toEqual({ status: 'needs-approval', filterLeftDisabled: true })
+    expect(events.some((e) => e.startsWith('confirming@'))).toBe(false)
+    expect(events.some((e) => e.startsWith('activating@'))).toBe(true)
+  })
+
+  it('reports the check before the refusals, so a Mac that declines still says why it paused', () => {
+    // `readNetFilterState` is `systemextensionsctl` plus three `defaults`, each bounded at 10s. A
+    // refusal decided from that reading is the one case where the whole visible runtime is the
+    // probe. The mutation: move `onProgress('checking')` below the guards.
+    machine({ installed: NEWER, activated: NEWER })
+    const { events, onProgress } = traced(0)
+    expect(installNetFilter({ onProgress })).toMatchObject({ status: 'refused-downgrade' })
+    // `@0` — the refusal is decided from the probe alone, so nothing was spawned before it.
+    expect(events).toEqual(['checking@0'])
+    expect(spawnOrder()).toEqual([])
+  })
+
+  it('front-loads the approval warning, because nothing later can say it', () => {
+    // The host logs "needs user approval" to its own file and exits 4 only once its 120s deadline
+    // has passed; a blocking `spawnSync` cannot read that in between. So this sentence is the only
+    // warning the person gets. The mutation: drop it from the message.
+    //
+    // **And it names the button.** macOS 27's dialog highlights OK, which only dismisses it and leaves the
+    // extension unapproved (measured 2026-09-17), so "approve it" alone sends people to the wrong one.
+    expect(INSTALL_STAGE_MESSAGE.activating).toMatch(/Open System Settings/)
+    expect(INSTALL_STAGE_MESSAGE.activating).toMatch(/not OK/)
+    expect(INSTALL_STAGE_MESSAGE.activating).toContain('Network Extensions')
+  })
+
+  it('says the screen is coming when it was accepted up front, and keeps the path for when it does not', () => {
+    // Nothing can check that the window appeared, so the line never says it did.
+    const line = INSTALL_STAGE_MESSAGE['activating-with-sheet']
+    expect(line).toMatch(/approval screen opens/i)
+    expect(line).toContain('Network Extensions')
+    expect(line).not.toMatch(/\bopened\b|\bis open\b/i)
+  })
+
+  it('carries a non-empty message for every stage and no stage it does not have', () => {
+    // `Record<InstallStage, string>` already makes a *missing* key a type error. What it does not
+    // catch is an empty string or a leftover key, and both print nothing useful to somebody waiting.
+    // Same shape as `knownFlags` against `parseMode` in the filter's own Swift: two things that have
+    // to agree, where only a test can say so.
+    const stages: InstallStage[] = [
+      'checking', 'disabling', 'copying', 'activating', 'activating-with-sheet', 'confirming',
+    ]
+    for (const s of stages) expect(INSTALL_STAGE_MESSAGE[s].trim(), s).not.toEqual('')
+    expect(Object.keys(INSTALL_STAGE_MESSAGE).sort()).toEqual([...stages].sort())
+
+    // **Anchored on the words, not only on the key.** Every other assertion in this file reads a
+    // message *through* the map, so swapping two of its values satisfies all of them while the
+    // install announces a copy as it disables. These read the content instead.
+    expect(INSTALL_STAGE_MESSAGE.copying).toContain(NET_FILTER_APP)
+    expect(INSTALL_STAGE_MESSAGE.checking).toMatch(/check/i)
+    expect(INSTALL_STAGE_MESSAGE.disabling).toMatch(/out of the path/i)
+    expect(INSTALL_STAGE_MESSAGE.confirming).toMatch(/running/i)
+  })
+
+  it('does not let a throwing reporter abandon the install', () => {
+    // **Raised by two independent reviews, neither of which found a reaching path** — both callers
+    // pass `step`, which is a `console.log`, and node's console swallows write errors. Guarded on
+    // cost rather than likelihood: an exception escaping after `disabling` leaves the Mac with its
+    // filter off, no outcome, and no banner. The mutation is deleting the `try` in `reportProgress`,
+    // which turns this into a thrown `reporter exploded` instead of an outcome.
+    freshMac()
+    hostExits(0)
+    expect(installNetFilter({
+      confirmDeadlineMs: 0,
+      onProgress: () => { throw new Error('reporter exploded') },
+    })).toEqual({ status: 'installed-unconfirmed' })
+    // And the install really ran rather than being skipped into a quiet no-op.
+    expect(spawnOrder()).toEqual(['--off', 'ditto', '--off', '--install'])
+  })
+
+  it('reports activating even when the step it gates fails, and stops there', () => {
+    // **A `failed` path, which nothing else here covers.** The gate `--off` refuses, so `--install`
+    // never runs: no activation, no approval prompt, no two-minute wait — yet `activating` has been
+    // printed. That is deliberate rather than overlooked. The line names the disable-then-activate
+    // pair as one step, and moving it below the disable would bury a 15-second wait under the
+    // `copying` label. What must hold is that nothing further is claimed: no `confirming`.
+    freshMac()
+    const events: InstallStage[] = []
+    mockSpawnSync.mockImplementation(((cmd: unknown, args: unknown) => {
+      if (String(cmd) === '/usr/bin/ditto') return { status: 0, stdout: '', stderr: '' }
+      // The pre-copy disable runs from the package; the gate disable runs from /Applications.
+      const isGateOff = (args as string[] | undefined)?.includes('--off')
+        && String(cmd).startsWith(NET_FILTER_APP)
+      return isGateOff
+        ? { status: 3, stdout: '', stderr: 'save refused' }
+        : { status: 0, stdout: '', stderr: '' }
+    }) as never)
+
+    expect(installNetFilter({ onProgress: (s) => events.push(s) }))
+      .toMatchObject({ status: 'failed', code: 3 })
+    expect(events).toEqual(['checking', 'disabling', 'copying', 'activating'])
+  })
+})
+
+describe('net filter — following an approval through', () => {
+  onMac()
+  beforeEach(() => { vi.resetAllMocks(); hostExits(0) })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  const HOST = `${NET_FILTER_APP}/Contents/MacOS/TapflowNetFilter`
+  const LOG = '/tmp/tapflow-netfilter-host.log'
+  /**
+   * What the early ways out must hand back. **A value `installNetFilter` does not produce today** —
+   * it always says the filter was left off — so an answer made up inside the flow cannot pass for it.
+   */
+  const HANDED: NeedsApproval = { status: 'needs-approval', filterLeftDisabled: false }
+  /** After a wait in which nothing turned the filter on: observed off. */
+  const OBSERVED_OFF = { status: 'needs-approval', filterLeftDisabled: true }
+
+  /** The host run with no arguments — the configure mode that switches the filter on. */
+  const switchOnRuns = () => mockSpawnSync.mock.calls.filter(
+    (c) => String(c[0]) === HOST && ((c[1] as string[] | undefined) ?? []).length === 0)
+  const openRuns = () => mockSpawnSync.mock.calls.filter((c) => String(c[0]) === '/usr/bin/open')
+
+  /**
+   * Somebody at a terminal. Every line they are shown is stamped with how many processes had been
+   * spawned when it was said, so "before the window" and "before the switch" can be asserted rather
+   * than read off the order of two separate logs.
+   */
+  function person(o: { answer?: boolean | 'cancelled'; interactive?: boolean; waitMs?: number } = {}) {
+    const said: string[] = []
+    const asked: string[] = []
+    const deps: ApprovalDeps = {
+      interactive: o.interactive ?? true,
+      confirm: async (m) => { asked.push(m); return o.answer ?? true },
+      say: (l) => { said.push(`${mockSpawnSync.mock.calls.length}|${l}`) },
+      approvalWaitMs: o.waitMs ?? 0,
+    }
+    return { deps, said, asked }
+  }
+
+  /** Nothing installed, and a bundle on disk for the copy to restore modes on. */
+  function freshMac() {
+    machine({ installed: null, activated: null })
+    bundleOnDisk()
+  }
+
+  /** The switch-on run answers with `result`; every other process succeeds. */
+  function switchOnAnswers(result: { status: number | null; stderr?: string; error?: { code: string; message: string } }) {
+    mockSpawnSync.mockImplementation(((cmd: unknown, args: unknown) => (
+      String(cmd) === HOST && ((args as string[] | undefined) ?? []).length === 0
+        ? { stdout: '', stderr: result.stderr ?? '', status: result.status, error: result.error }
+        : { status: 0, stdout: '', stderr: '' }
+    )) as never)
+  }
+
+  // **`approvedAfterLooks: 0` in the refusals below is deliberate.** It makes approval available at
+  // once, so deleting the guard under test does not stall quietly — it carries on to switch the filter
+  // on, and `confirmDeadlineMs: 0` makes that answer immediately rather than on a 30-second timeout.
+
+  it('does not ask, open or wait when nobody is at a terminal', async () => {
+    // Non-interactive runs print guidance instead (cli/AGENTS.md). The mutation is the `interactive`
+    // guard: without it a CI log gets a prompt nobody will answer.
+    machine({ activated: null, approvedAfterLooks: 0 })
+    const { deps, asked } = person({ interactive: false })
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(HANDED)
+    expect(asked).toEqual([])
+    expect(openRuns()).toHaveLength(0)
+    expect(switchOnRuns()).toHaveLength(0)
+  })
+
+  it('leaves the Mac as it was when the offer is declined, and hands back what it was given', async () => {
+    machine({ activated: null, approvedAfterLooks: 0 })
+    const { deps, asked } = person({ answer: false })
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(HANDED)
+    expect(asked).toEqual([APPROVAL_MESSAGE.prompt])
+    expect(openRuns()).toHaveLength(0)
+    expect(switchOnRuns()).toHaveLength(0)
+  })
+
+  it('does not ask again after a no up front, and leaves the Mac as it was', async () => {
+    // The person already said they would approve it their own way. The mutation is dropping `declined`
+    // from the first guard: the same question then comes back two minutes later.
+    machine({ activated: null, approvedAfterLooks: 0 })
+    const { deps, asked } = person()
+    for (const offer of ['declined', 'cancelled'] as const) {
+      expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 }, offer)).toEqual(HANDED)
+    }
+    expect(asked).toEqual([])
+    expect(openRuns()).toHaveLength(0)
+    expect(switchOnRuns()).toHaveLength(0)
+  })
+
+  it('goes straight to the screen after a yes up front, without asking twice', async () => {
+    // The mutation is asking regardless of `offer`: a second consent prompt for the same switch.
+    machine({ activated: null, approvedAfterLooks: 0, heartbeatAgeSeconds: -2 })
+    const { deps, asked } = person({ answer: false })
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 2_000 }, 'accepted'))
+      .toEqual({ status: 'installed' })
+    expect(asked).toEqual([])
+    expect(openRuns().map((c) => c[1])).toEqual([[APPROVAL_SHEET_URL]])
+    expect(switchOnRuns()).toHaveLength(1)
+  })
+
+  it('asks up front only when macOS is going to ask, and says what a yes costs', async () => {
+    // Nothing `[activated enabled]` is the prediction: a first install, a rerun over a waiting request,
+    // a reinstall after a removal. The question carries the same warning as the later one.
+    machine({ activated: null })
+    const yes = person()
+    expect(await offerApprovalUpFront(yes.deps)).toBe('accepted')
+    expect(yes.asked).toEqual([APPROVAL_MESSAGE.upfront])
+    expect(APPROVAL_MESSAGE.upfront).toMatch(/drop/i)
+    expect(APPROVAL_MESSAGE.upfront).toMatch(/SSH/)
+
+    const no = person({ answer: false })
+    expect(await offerApprovalUpFront(no.deps)).toBe('declined')
+
+    // Backing out is not a no: a no still installs.
+    const out = person({ answer: 'cancelled' })
+    expect(await offerApprovalUpFront(out.deps)).toBe('cancelled')
+  })
+
+  it('reads a cancel at the later question as a no, since the install has already run', async () => {
+    // The mutation is testing the answer for truthiness: the string `'cancelled'` is truthy, so the
+    // screen would open and the filter go on for someone who pressed Escape.
+    machine({ activated: null, approvedAfterLooks: 0 })
+    const { deps, asked } = person({ answer: 'cancelled' })
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(HANDED)
+    expect(asked).toEqual([APPROVAL_MESSAGE.prompt])
+    expect(openRuns()).toHaveLength(0)
+    expect(switchOnRuns()).toHaveLength(0)
+  })
+
+  it('does not ask up front where macOS will not ask, or where nobody can answer', async () => {
+    // An activated extension is replaced without an approval, so the question would be noise; the
+    // mutation is dropping that half of the prediction. The others are the usual guards.
+    machine({ activated: OLDER })
+    const replaced = person()
+    expect(await offerApprovalUpFront(replaced.deps)).toBe('not-asked')
+    expect(replaced.asked).toEqual([])
+
+    machine({ activated: null })
+    const script = person({ interactive: false })
+    expect(await offerApprovalUpFront(script.deps)).toBe('not-asked')
+    expect(script.asked).toEqual([])
+
+    machine({ shipped: null, activated: null })
+    const noArtifact = person()
+    expect(await offerApprovalUpFront(noArtifact.deps)).toBe('not-asked')
+    expect(noArtifact.asked).toEqual([])
+  })
+
+  it('does not ask up front off macOS', async () => {
+    const real = process.platform
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    try {
+      machine({ activated: null })
+      const p = person()
+      expect(await offerApprovalUpFront(p.deps)).toBe('not-asked')
+      expect(p.asked).toEqual([])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: real, configurable: true })
+    }
+  })
+
+  it('starts the sheet opener after the gate disable and before the host waits, only when asked to', () => {
+    // **The whole point of asking up front.** The host blocks this process for up to two minutes, so
+    // only something already running can open the sheet during that wait. The mutations: never
+    // starting it, starting it after `--install` (which is after the wait), and starting it without
+    // being asked — a window nobody agreed to.
+    freshMac()
+    hostExits(4)
+    const stages: InstallStage[] = []
+    expect(installNetFilter({ openApprovalSheet: true, onProgress: (s) => stages.push(s) }))
+      .toMatchObject({ status: 'needs-approval' })
+    expect(openerRuns()).toHaveLength(1)
+    const [cmd, args, options] = openerRuns()[0]!
+    expect(cmd).toBe('/bin/sh')
+    // Positional, so nothing is parsed as shell: script, $0, then list, bundle, open, url, looks, gap.
+    expect(args).toEqual([
+      '-c', SHEET_OPENER_SCRIPT, 'tapflow-sheet-opener',
+      '/usr/bin/systemextensionsctl', 'dev.tapflow.netfilter.ext', '/usr/bin/open', APPROVAL_SHEET_URL,
+      String(SHEET_OPENER_LOOKS), '0.5',
+    ])
+    // Detached, so it neither holds the command open nor dies with it.
+    expect(options).toMatchObject({ detached: true, stdio: 'ignore' })
+    const openerAt = mockSpawn.mock.invocationCallOrder[0]!
+    const install = mockSpawnSync.mock.calls.findIndex((c) => (c[1] as string[] | undefined)?.includes('--install'))
+    const gateOff = mockSpawnSync.mock.calls.findIndex(
+      (c) => String(c[0]).startsWith(NET_FILTER_APP) && (c[1] as string[] | undefined)?.includes('--off'))
+    expect(openerAt).toBeGreaterThan(mockSpawnSync.mock.invocationCallOrder[gateOff]!)
+    expect(openerAt).toBeLessThan(mockSpawnSync.mock.invocationCallOrder[install]!)
+    expect(stages).toContain('activating-with-sheet')
+    expect(stages).not.toContain('activating')
+
+    vi.clearAllMocks()
+    freshMac()
+    hostExits(4)
+    installNetFilter({})
+    expect(openerRuns(), 'a window nobody agreed to').toHaveLength(0)
+  })
+
+  it('opens nothing for an install that was refused', () => {
+    freshMac()
+    machine({ installed: null, activated: null, booted: ['iPhone 17'] })
+    hostExits(4)
+    expect(installNetFilter({ openApprovalSheet: true })).toMatchObject({ status: 'refused-devices-busy' })
+    expect(openerRuns()).toHaveLength(0)
+  })
+
+  it('lets the opener go, and installs anyway when it cannot start', () => {
+    // `unref` is what keeps a finished command from waiting 45 seconds on the opener's loop.
+    freshMac()
+    hostExits(0)
+    const child = { unref: vi.fn(), on: vi.fn() }
+    mockSpawn.mockReturnValue(child as never)
+    installNetFilter({ openApprovalSheet: true, confirmDeadlineMs: 0 })
+    expect(child.unref).toHaveBeenCalledTimes(1)
+    // An `error` event with no listener is thrown by the emitter; one that cannot start must not be.
+    expect(child.on).toHaveBeenCalledWith('error', expect.any(Function))
+
+    vi.clearAllMocks()
+    freshMac()
+    hostExits(0)
+    mockSpawn.mockImplementation(() => { throw new Error('EAGAIN') })
+    expect(installNetFilter({ openApprovalSheet: true, confirmDeadlineMs: 0 }))
+      .toEqual({ status: 'installed-unconfirmed' })
+    expect(mockSpawnSync.mock.calls.some((c) => (c[1] as string[] | undefined)?.includes('--install'))).toBe(true)
+  })
+
+  it('does not offer the screen when there is no version to recognise the approval by', async () => {
+    // `bundleVersion` answers null when `defaults read` times out, so this is reachable. Two mutations:
+    // moving the check after the prompt asks a question the flow cannot follow through on, and dropping
+    // it compares the extension list against null — which reads "nothing activated" as approved.
+    machine({ shippedExt: null, activated: null, approvedAfterLooks: 0 })
+    const { deps, asked } = person()
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(HANDED)
+    expect(asked).toEqual([])
+    expect(openRuns()).toHaveLength(0)
+    expect(switchOnRuns()).toHaveLength(0)
+  })
+
+  it('asks for consent to the switch, not only to the screen', () => {
+    // A yes is carried through to switching the filter on, which drops connections. By the time the
+    // `switching` line prints, System Settings has focus — and over SSH the switch closes the session.
+    // The mutation is taking the warning back out of the question.
+    expect(APPROVAL_MESSAGE.prompt).toMatch(/drop/i)
+    expect(APPROVAL_MESSAGE.prompt).toMatch(/SSH/)
+  })
+
+  it('opens the measured URL exactly once, and says where it is going before it does', async () => {
+    // The URL is the one `contributing/macos-settings-deep-link-diagnosis.md` measured; three others that
+    // look right land on the wrong screen. The stamp `0|` means the line was on screen before `open`.
+    machine({ activated: null, approvedAfterLooks: 0, heartbeatAgeSeconds: -2 })
+    const { deps, said } = person()
+    await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 2_000 })
+    expect(openRuns().map((c) => c[1])).toEqual([[APPROVAL_SHEET_URL]])
+    expect(said[0]).toBe(`0|${APPROVAL_MESSAGE.opening}`)
+  })
+
+  it('never says the sheet opened, because nothing can know that', () => {
+    // `open` answers 0 for a pane id that does not exist, so "it is open" would be a claim with no
+    // evidence. The path stays in the line for when it did not.
+    expect(APPROVAL_MESSAGE.opening).not.toMatch(/\bopened\b|\bis open\b/i)
+    expect(APPROVAL_MESSAGE.opening).toContain('Login Items & Extensions')
+    expect(APPROVAL_MESSAGE.opening).toContain('Network Extensions')
+  })
+
+  it('switches the filter on in the same run once this build\'s extension is activated', async () => {
+    // One pending reading, then approved — so the wait is exercised rather than skipped. The mutation is
+    // deleting the switch: the run then ends "approval needed" over a Mac that was just approved, which is
+    // the second run #799 exists to remove.
+    machine({ activated: null, approvedAfterLooks: 1, heartbeatAgeSeconds: -2 })
+    const { deps, said } = person({ waitMs: 5_000 })
+    const stages: string[] = []
+    expect(await followThroughApproval(HANDED, deps, {
+      confirmDeadlineMs: 2_000,
+      onProgress: (s) => stages.push(`${s}@${mockSpawnSync.mock.calls.length}`),
+    })).toEqual({ status: 'installed' })
+    expect(switchOnRuns(), 'it asked for another run instead of switching on').toHaveLength(1)
+    // **Warned before the switch.** `open` is spawn 1 and the switch is spawn 2, so a warning stamped `2|`
+    // arrived after connections had already dropped. #799 records an SSH session closed by this.
+    expect(said).toContain(`1|${APPROVAL_MESSAGE.switching}`)
+    // And the wait after it is announced, as the install announces its own — up to thirty silent seconds.
+    expect(stages).toEqual(['confirming@2'])
+  })
+
+  it('does not take a previously activated extension for the approval', async () => {
+    // `installNetFilter` does not refuse an older activated extension, so this state reaches here. The
+    // mutation is comparing against null instead of against the shipped version: that reads as approval
+    // before anyone touched the switch.
+    machine({ activated: OLDER, filterRunning: false })
+    const { deps } = person()
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(OBSERVED_OFF)
+    expect(switchOnRuns()).toHaveLength(0)
+  })
+
+  it('gives up when nobody switches it on within the wait, and sleeps between looks', async () => {
+    // Bounded, and not a busy loop. A 1.5 s wait at a one-second pace is three readings — at 0, 1 and
+    // 2 s. Deleting the sleep turns that into millions; deleting the deadline never returns.
+    //
+    // **The approval is unreachable, not merely late.** This was 1 000 looks, and deleting the sleep
+    // reached that in a few milliseconds — so the fixture approved, the flow switched on, and the test
+    // failed on its outcome while the look count below was never evaluated. The mutation was caught for
+    // a reason this test does not name. With no approval to reach, the spin has to be caught by the
+    // assertion that says it spun.
+    machine({ activated: null, approvedAfterLooks: Number.POSITIVE_INFINITY, filterRunning: false })
+    const { deps } = person({ waitMs: 1_500 })
+    const began = Date.now()
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual(OBSERVED_OFF)
+    expect(Date.now() - began, 'it answered before the wait was over').toBeGreaterThanOrEqual(1_400)
+    const looks = mockExecFileSync.mock.calls.filter((c) => String(c[0]).endsWith('/systemextensionsctl'))
+    expect(looks.length, 'it spun instead of sleeping between looks').toBeLessThanOrEqual(4)
+    expect(switchOnRuns()).toHaveLength(0)
+  })
+
+  it('reports the filter as it finds it after waiting, not as it was left', async () => {
+    // Minutes pass in the wait, and something else — an agent arming a simulator it booted — may have
+    // written the configuration meanwhile. Each exit has its own line to hardcode, so each is asserted.
+    machine({ activated: null, approvedAfterLooks: Number.POSITIVE_INFINITY, filterRunning: true })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }),
+      'the timed-out wait assumed the filter was still off')
+      .toEqual({ status: 'needs-approval', filterLeftDisabled: false })
+
+    vi.resetAllMocks(); hostExits(0)
+    machine({ activated: null, approvedAfterLooks: 0, booted: ['iPhone 17'], filterRunning: true })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }),
+      'the busy refusal assumed the filter was still off')
+      .toEqual({ status: 'refused-devices-busy', busy: ['simulator iPhone 17'], filterLeftDisabled: false })
+  })
+
+  it('does not switch on over a device somebody started while it waited', async () => {
+    // **Started during the wait, not before it.** The simulator appears only after the extension list
+    // has been read once, so moving the check ahead of the wait finds nothing running and switches on —
+    // which is the mutation. With the device present from the start, that move was indistinguishable.
+    // Nor is the warning printed for a switch that is not made.
+    machine({ activated: null, approvedAfterLooks: 0, booted: ['iPhone 17'], bootedAfterListLooks: 0, filterRunning: false })
+    const { deps, said } = person()
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 }))
+      .toEqual({ status: 'refused-devices-busy', busy: ['simulator iPhone 17'], filterLeftDisabled: true })
+    expect(switchOnRuns()).toHaveLength(0)
+    expect(said.some((l) => l.endsWith(APPROVAL_MESSAGE.switching)), 'it warned about a switch it did not make')
+      .toBe(false)
+  })
+
+  it('switches on over running devices when told to', async () => {
+    machine({ activated: null, approvedAfterLooks: 0, booted: ['iPhone 17'], heartbeatAgeSeconds: -2 })
+    const { deps } = person()
+    expect(await followThroughApproval(HANDED, deps, { ignoreRunningDevices: true, confirmDeadlineMs: 2_000 }))
+      .toEqual({ status: 'installed' })
+    expect(switchOnRuns()).toHaveLength(1)
+  })
+
+  it('says the filter is still off when switching it on fails', async () => {
+    // The flag is what both commands print "the filter is switched OFF" from; leaving it false would tell
+    // someone their network control is merely broken when it is actually disabled.
+    machine({ activated: null, approvedAfterLooks: 0 })
+    switchOnAnswers({ status: 3, stderr: 'save refused' })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }))
+      .toMatchObject({ status: 'failed', code: 3, detail: 'save refused', filterLeftDisabled: true })
+  })
+
+  it('treats any non-zero exit from the switch-on as a failure, and reports that exit', async () => {
+    // A load failure is 2. Testing only 3 left `status === 3` — and a constant `code` — standing.
+    machine({ activated: null, approvedAfterLooks: 0 })
+    switchOnAnswers({ status: 2, stderr: 'load refused' })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }))
+      .toMatchObject({ status: 'failed', code: 2, detail: 'load refused' })
+    expect(switchOnRuns()).toHaveLength(1)
+  })
+
+  it('reports a switch-on that ran out of time as unanswered, and looks at whether it landed', async () => {
+    // The save waits on macOS's content-filter question, so a run that was cut off is most likely a
+    // person still reading it — not a save that failed. And it may have landed after all: here a
+    // provider is pulsing, so the flag must say the filter is not off.
+    machine({ activated: null, approvedAfterLooks: 0, filterRunning: true })
+    switchOnAnswers({ status: null, error: { code: 'ETIMEDOUT', message: 'spawnSync TapflowNetFilter ETIMEDOUT' } })
+    const outcome = await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 })
+    expect(outcome).toMatchObject({ status: 'failed', filterLeftDisabled: false })
+    expect((outcome as { detail: string }).detail).toMatch(/nothing answered/)
+    expect((outcome as { detail: string }).detail).toMatch(/network content/)
+  })
+
+  it('does not explain a failed switch-on with a line the approval run left in the log', async () => {
+    // The host log is shared, and the run that stopped at approval wrote its own last line. A switch-on
+    // that never started writes nothing, so without the snapshot that stale line is what gets reported.
+    machine({ activated: null, approvedAfterLooks: 0 })
+    const stale = 'no approval within 120s — approve the extension in System Settings and run this again'
+    mockReadFileSync.mockImplementation((p) => {
+      if (String(p) === LOG) return stale as never
+      if (String(p) === FILTER_STATE_FILE) return JSON.stringify({ at: Math.floor(Date.now() / 1000), pulseSeconds: 5 }) as never
+      return '' as never
+    })
+    switchOnAnswers({ status: null, error: { code: 'ENOENT', message: 'spawnSync TapflowNetFilter ENOENT' } })
+    const outcome = await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 })
+    expect(outcome).toMatchObject({ status: 'failed', filterLeftDisabled: true })
+    expect((outcome as { detail: string }).detail).not.toContain('no approval')
+    expect((outcome as { detail: string }).detail).toContain('ENOENT')
+  })
+
+  it('does not call it installed until a filter reports itself running', async () => {
+    // A preference save accepted is not a provider enforcing — the same look the install takes on exit 0.
+    machine({ activated: null, approvedAfterLooks: 0, filterRunning: false })
+    const { deps } = person()
+    expect(await followThroughApproval(HANDED, deps, { confirmDeadlineMs: 0 })).toEqual({ status: 'installed-unconfirmed' })
+    expect(switchOnRuns()).toHaveLength(1)
+  })
+
+  it('does not accept a heartbeat from the second the filter was switched on', async () => {
+    // The same exclusive baseline as the install: a pulse from that second could be a provider that was
+    // already there. The mutation is a baseline of 0, which takes any fresh file.
+    machine({ activated: null, approvedAfterLooks: 0, heartbeatAgeSeconds: 0 })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 0 }))
+      .toEqual({ status: 'installed-unconfirmed' })
+  })
+
+  it('waits for the filter to come up rather than answering on the first look', async () => {
+    // A provider takes seconds to apply its settings. The mutation is a deadline of zero, which reports
+    // "nothing is filtering" over a filter that was about to start — and exits 1.
+    machine({ activated: null, approvedAfterLooks: 0, heartbeatAgeSeconds: -2 })
+    let stateLooks = 0
+    mockExistsSync.mockImplementation((p) => {
+      const q = String(p)
+      if (q === FILTER_STATE_FILE) return ++stateLooks > 2
+      return q.startsWith(NET_FILTER_APP) || q.includes('TapflowNetFilter.app')
+    })
+    expect(await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 5_000 }))
+      .toEqual({ status: 'installed' })
+    expect(stateLooks, 'it answered on the first look').toBeGreaterThan(2)
+  })
+
+  it('gives the switch-on, and the wait before it, a person\'s time', async () => {
+    // **Floors, not fences.** The save waits on a dialog, so a bound on the scale of a preference save
+    // kills the host while someone reads it; deleting the bound hangs on a wedged run. Neither value is
+    // checked for being exactly right.
+    machine({ activated: null, approvedAfterLooks: 0, heartbeatAgeSeconds: -2 })
+    await followThroughApproval(HANDED, person().deps, { confirmDeadlineMs: 2_000 })
+    const options = switchOnRuns()[0]?.[2] as { timeout?: number } | undefined
+    expect(options?.timeout, 'the switch-on run has no human-scale deadline').toBeGreaterThanOrEqual(60_000)
+    expect(APPROVAL_WAIT_MS).toBeGreaterThanOrEqual(60_000)
+  })
+})
+
 describe('doctor — what it says about the filter', () => {
   onMac()
   beforeEach(() => { vi.resetAllMocks() })
@@ -923,6 +1586,68 @@ describe('doctor — what it says about the filter', () => {
     // The version half is still true and says so: this is not a version problem, and telling someone
     // to upgrade would send them somewhere that cannot help.
     expect(version).toEqual({ label: 'Network filter version', ok: true })
+  })
+})
+
+describe('net filter — how to remove it', () => {
+  onMac()
+  beforeEach(() => { vi.resetAllMocks() })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  /** The one command the advice used to give, and the one a Mac with SIP on refuses. */
+  const REFUSED_UNDER_SIP = /systemextensionsctl uninstall/
+
+  it('switches the filter off with the binary this package carries, then removes, then restarts', () => {
+    machine({ installed: null })
+    const steps = removalSteps()
+    expect(steps.join('\n')).not.toMatch(REFUSED_UNDER_SIP)
+    // **This package's binary, not `/Applications`'s**: every caller is the state where that one is
+    // gone, so naming it would hand someone a command that cannot run.
+    const bin = join(SHIPPED_APP, 'Contents', 'MacOS', 'TapflowNetFilter')
+    // `chmod +x` in the same command: a registry install ships this binary without its executable bit,
+    // and nothing on these paths restores it, so a bare path is `permission denied`.
+    const off = steps.findIndex((s) => s.includes(`chmod +x ${bin} && ${bin} --off`))
+    const remove = steps.findIndex((s) => s.includes('System Settings') && s.includes('Network Extensions'))
+    const restart = steps.findIndex((s) => /Restart/.test(s))
+    expect(off, 'no step switches the filter off with the shipped binary').toBeGreaterThanOrEqual(0)
+    expect(remove, 'no step says where the removal happens').toBeGreaterThanOrEqual(0)
+    expect(restart, 'the removal only finishes at a restart, and nothing says so').toBeGreaterThanOrEqual(0)
+    // Off before the removal: removing an enforcing filter is the shape that took a Mac's network down.
+    expect([off, remove, restart]).toEqual([0, 1, 2])
+  })
+
+  it('still says what to switch off with when the package has no binary to name', () => {
+    machine({ shipped: null, installed: null })
+    const [off] = removalSteps()
+    expect(off).toMatch(/--off/)
+    expect(off).toMatch(/@tapflowio\/ios-agent/)
+  })
+
+  it('quotes a path only when a shell would split it', () => {
+    expect(shellQuote('/opt/tapflow/node_modules/@tapflowio/ios-agent/bin/X')).toBe('/opt/tapflow/node_modules/@tapflowio/ios-agent/bin/X')
+    expect(shellQuote('/Users/Jo Duchan/bin/X')).toBe(`'/Users/Jo Duchan/bin/X'`)
+    expect(shellQuote(`/Users/o'neil/bin/X`)).toBe(`'/Users/o'\\''neil/bin/X'`)
+  })
+
+  it('is what doctor gives for an extension whose app is gone', async () => {
+    machine({ installed: null, activated: OLDER })
+    const [check] = await netFilterChecks()
+    expect(check.detail).toMatch(/gone from \/Applications/)
+    expect(check.detail).not.toMatch(REFUSED_UNDER_SIP)
+    expect(check.detail).toContain(removalSteps().join('; '))
+  })
+
+  it('is what setup gives when it leaves such a Mac alone', async () => {
+    await onMacFor(async () => {
+      machine({ installed: null, activated: OLDER })
+      mockExecSyncForIos()
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      const step = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(step?.detail).toMatch(/^Left alone/)
+      expect(step?.detail).not.toMatch(REFUSED_UNDER_SIP)
+      expect(step?.detail).toContain(removalSteps().join('; '))
+    })
   })
 })
 
@@ -1036,6 +1761,140 @@ describe('setup and migrate share one install', () => {
       expect(filterPrompts().length, 'it installed without asking').toBe(1)
       expect(step).toMatchObject({ ok: true, state: 'created' })
       expect(dittoCalls().length).toBe(1)
+    })
+  })
+
+  it('says it is checking before the probe that lets setup skip the install entirely', async () => {
+    // **The common path, and the installer's own report cannot reach it.** A Mac that is already set
+    // up returns from `setUpNetFilter` before `installNetFilter` is ever called — and the probe it
+    // returns on is `systemextensionsctl` plus three `defaults read`, bounded at 10s each. Deleting
+    // the `step(...)` in that branch leaves `tapflow setup ios` silent for the whole wait, which is
+    // the defect this change exists to end. That deletion is the mutation.
+    await onMacFor(async () => {
+      machine({})
+      mockExecSyncForIos()
+      const logged = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const result = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(result, 'the step never ran, so the silence proves nothing').toMatchObject({
+        ok: true, state: 'found',
+      })
+      expect(logged.mock.calls.map((c) => String(c[0])).join('\n'))
+        .toContain(INSTALL_STAGE_MESSAGE.checking)
+    })
+  })
+
+  it('offers the approval screen before installing, opens it during the wait, and finishes once it is given', async () => {
+    // **The setup half of the wiring.** Three mutations: deleting the `followThroughApproval` call leaves
+    // this step pending over a Mac the person just approved; not passing the answer to the install
+    // never starts the opener; not passing it to the follow-through asks the same question twice.
+    await onMacFor(async () => {
+      // Readings of the extension list before the wait: setup's probe, the up-front offer's, the
+      // install's. Approval arrives on the fourth, which is the first look the wait takes.
+      machine({ installed: null, activated: null, approvedAfterLooks: 3, heartbeatAgeSeconds: -2 })
+      mockExecSyncForIos()
+      mockSpawnSync.mockImplementation(((_cmd: unknown, args: unknown) => ({
+        status: ((args as string[] | undefined) ?? []).includes('--install') ? 4 : 0, stdout: '', stderr: '',
+      })) as never)
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      vi.spyOn(console, 'log').mockImplementation(() => {})
+      const result = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      const prompts = mockConfirm.mock.calls.map((c) => (c[0] as { message?: string }).message)
+      expect(prompts, 'the approval screen was never offered').toContain(APPROVAL_MESSAGE.upfront)
+      expect(prompts, 'asked twice').not.toContain(APPROVAL_MESSAGE.prompt)
+      expect(openerRuns(), 'the answer never reached the install').toHaveLength(1)
+      expect(result).toMatchObject({ ok: true, state: 'created' })
+    })
+  })
+
+  it('installs nothing when the approval question is backed out of', async () => {
+    // **The reason `cancelled` exists.** The question warns that connections may drop, SSH included;
+    // someone who presses Escape at it has not agreed to the install either. Every other setup prompt
+    // reads a cancel as "skip this install", and this one used to install anyway.
+    await onMacFor(async () => {
+      machine({ installed: null, activated: null })
+      mockExecSyncForIos()
+      hostExits(0)
+      setTTY(true)
+      const cancel = Symbol('clack:cancel')
+      vi.mocked(isCancel).mockImplementation((v) => v === cancel)
+      mockConfirm
+        .mockResolvedValueOnce(true as never)
+        .mockResolvedValueOnce(cancel as never)
+      vi.spyOn(console, 'log').mockImplementation(() => {})
+      const result = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      const prompts = mockConfirm.mock.calls.map((c) => (c[0] as { message?: string }).message)
+      expect(prompts, 'the cancel was never on the approval question').toContain(APPROVAL_MESSAGE.upfront)
+      expect(dittoCalls()).toHaveLength(0)
+      expect(hostCalls('--install')).toHaveLength(0)
+      expect(result).toMatchObject({ ok: true, warn: true })
+      expect(result?.detail).toMatch(/^Skipped/)
+    })
+  })
+
+  it('still offers the screen after the wait when macOS was not expected to ask', async () => {
+    // An activated extension is replaced without asking, so nothing is offered up front; if macOS asks
+    // after all, the offer after the host's wait is still there.
+    await onMacFor(async () => {
+      machine({ installed: OLDER, activated: OLDER, approvedAfterLooks: 3, heartbeatAgeSeconds: -2 })
+      mockExecSyncForIos()
+      mockSpawnSync.mockImplementation(((_cmd: unknown, args: unknown) => ({
+        status: ((args as string[] | undefined) ?? []).includes('--install') ? 4 : 0, stdout: '', stderr: '',
+      })) as never)
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      vi.spyOn(console, 'log').mockImplementation(() => {})
+      const result = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      const prompts = mockConfirm.mock.calls.map((c) => (c[0] as { message?: string }).message)
+      expect(prompts).not.toContain(APPROVAL_MESSAGE.upfront)
+      expect(prompts).toContain(APPROVAL_MESSAGE.prompt)
+      expect(openerRuns()).toHaveLength(0)
+      expect(result).toMatchObject({ ok: true, state: 'created' })
+    })
+  })
+
+  it('does not call an approved install whose switch-on was refused a skip', async () => {
+    // **The setup half of the refusal after approval.** It used to read "Skipped" with `ok: true` — over
+    // a Mac where the install had run and the filter was left off. Dropping the branch is the mutation.
+    await onMacFor(async () => {
+      // Readings of the extension list: setup's probe (1), the up-front offer's (2), the install's (3),
+      // the wait's first look (4). Approval and the simulator both arrive on the fourth, so the install's
+      // own busy check saw nothing.
+      machine({
+        installed: null, activated: null, approvedAfterLooks: 3,
+        booted: ['iPhone 17'], bootedAfterListLooks: 3, filterRunning: false,
+      })
+      mockExecSyncForIos()
+      mockSpawnSync.mockImplementation(((_cmd: unknown, args: unknown) => ({
+        status: ((args as string[] | undefined) ?? []).includes('--install') ? 4 : 0, stdout: '', stderr: '',
+      })) as never)
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      vi.spyOn(console, 'log').mockImplementation(() => {})
+      const result = (await runSetupIos()).find((r) => r.label === 'Network filter')
+      expect(result).toMatchObject({ ok: false, warn: true })
+      expect(result?.detail).toMatch(/Approved, but not switched on/)
+      expect(result?.detail).toMatch(/switched OFF/)
+    })
+  })
+
+  it('prints the install steps while it installs, not after the run is over', async () => {
+    // **The other half of the wiring**, and the reason it is asserted on stdout rather than on the
+    // returned step: `runSetupIos` gathers its results and the command prints them once every step
+    // has finished, so progress that were merely *returned* would appear after the wait it
+    // describes. The mutation is deleting `onProgress` from `setUpNetFilter`'s call.
+    await onMacFor(async () => {
+      machine({ installed: null, activated: null })
+      mockExecSyncForIos()
+      hostExits(0)
+      setTTY(true)
+      mockConfirm.mockResolvedValue(true as never)
+      const logged = vi.spyOn(console, 'log').mockImplementation(() => {})
+      await runSetupIos()
+      const written = logged.mock.calls.map((c) => String(c[0])).join('\n')
+      expect(written).toContain(INSTALL_STAGE_MESSAGE.checking)
+      // Accepted up front, since every prompt here answers yes.
+      expect(written).toContain(INSTALL_STAGE_MESSAGE['activating-with-sheet'])
     })
   })
 
