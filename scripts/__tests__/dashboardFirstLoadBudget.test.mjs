@@ -12,7 +12,13 @@ import { fileURLToPath } from 'url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DASHBOARD_DIST = resolve(ROOT, 'packages', 'dashboard', 'dist')
 const INDEX_HTML = resolve(DASHBOARD_DIST, 'index.html')
-const FIRST_LOAD_BROTLI_BUDGET = 155_000
+// #520 set 155,000 against 147,099 B, about 8 kB of room. By #809, main had grown to 153,019 B, and
+// that React 19.3 group adds 10.1 kB more (React 7.5, zod 1.6, lucide-react and react-hook-form 1.0)
+// for 163,150 B. 171,000 restores the same 8 kB of room.
+// The room must stay well below what the guard exists to catch: the eager vendor-ui / vendor-forms split
+// from 252262ba's vite.config.ts, which adds 12.5 to 13 kB and fails here at 176,109 B on #809's
+// dependencies. Before raising this again, rebuild with that config and check it still fails.
+const FIRST_LOAD_BROTLI_BUDGET = 171_000
 const MAX_RAW_JS_CHUNK_SIZE = 500_000
 
 function buildDashboardDist() {
