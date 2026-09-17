@@ -132,6 +132,26 @@ describe('RatholeTunnel', () => {
       expect(killSpy).toHaveBeenCalledWith(501)
     })
 
+    // "A node process" is not tapflow: the reused pid on a dev Mac is most likely another node one.
+    it('kills one whose owner pid came back as an unrelated node process', async () => {
+      vi.mocked(execFileSync).mockReturnValue(psOutput([
+        '  222 /Users/u/.nvm/versions/node/v24.15.0/bin/node /Users/u/Library/lsp/server.js',
+        ORPHAN_CLIENT,
+      ]))
+      await startOnce()
+      expect(killSpy).toHaveBeenCalledWith(501)
+    })
+
+    // `startConfiguredTunnel` runs setupServer first, and a failure there never reaches start().
+    it('also runs from setupServer, so a failure before start() still cleans up', async () => {
+      vi.mocked(execFileSync).mockReturnValue(psOutput([ORPHAN_CLIENT]))
+      vi.mocked(downloadBinary).mockRejectedValue(new Error('network down'))
+      const tunnel = new RatholeTunnel({ ...BASE_OPTS, ssh: SSH })
+      await expect(tunnel.setupServer()).rejects.toThrow()
+      expect(killSpy).toHaveBeenCalledWith(501)
+      expect(spawn).not.toHaveBeenCalled()
+    })
+
     it('starts anyway when the process list cannot be read', async () => {
       vi.mocked(execFileSync).mockImplementation(() => { throw new Error('ps: not found') })
       await startOnce()

@@ -87,7 +87,7 @@ docker compose up -d
 
 **토폴로지:** 이 컨테이너는 릴레이만 실행합니다. 실제 시뮬레이터를 구동하는 에이전트는 같은 LAN의 Mac에서 실행되어야 하며, `agent` 스코프 토큰을 사용하여 이 Docker 서버로 아웃바운드 연결을 해야 합니다(`tapflow agent start --relay ws://<docker-box-ip>:4000 --token ...`).
 
-**같은 네트워크 네임스페이스의 터널이나 프록시를 앞에 둔다면** `TAPFLOW_TUNNEL_PORT`를 설정하고 그 포트로 연결하세요. 릴레이는 같은 네임스페이스에서 온 연결에 로그인을 요구하지 않는데, 이 이미지에서는 터널 포트를 대신 열어 주는 것이 없습니다. `tunnel` 설정을 보고 포트를 여는 쪽은 `tapflow start`와 `tapflow relay start`이며 이 이미지는 둘 다 실행하지 않습니다. 다른 호스트의 프록시는 브리지를 거쳐 오므로 이미 원격으로 취급되며, 따로 설정할 것이 없습니다.
+**같은 네트워크 네임스페이스의 터널이나 프록시를 앞에 둔다면** `TAPFLOW_TUNNEL_PORT`(또는 `local.tunnelPort`)를 설정하고 그 포트로 연결하세요. 릴레이는 loopback으로 들어온 연결에 로그인을 요구하지 않고, 컨테이너의 네임스페이스를 공유하는 프록시는 그 경로로 연결합니다. 이 이미지에는 `tunnel` 설정을 보고 터널 포트를 여는 것이 없습니다. 그 일을 하는 쪽은 `tapflow start`와 `tapflow relay start`이며 이 이미지는 둘 다 실행하지 않습니다. 포트를 지정하는 것이 곧 여는 방법입니다. 다른 호스트의 프록시는 브리지를 거쳐 오므로 이미 원격으로 취급되며, 따로 설정할 것이 없습니다.
 
 ::: danger 릴레이를 클라우드에 직접 배포하지 마세요
 fly.io 등 클라우드 서비스에 Docker 컨테이너를 올리면 에이전트→릴레이 구간이 인터넷을 타게 됩니다. 이 경우 RTT가 30fps 기준(33ms/frame)을 초과해 프레임 드롭이 발생하며 스트리밍 품질을 보장할 수 없습니다. tapflow는 이 구성을 지원하지 않습니다.
@@ -240,7 +240,7 @@ Tailscale은 브라우저→릴레이 경로만 제공합니다. 에이전트(�
 :::
 
 ::: warning tailscaled는 TUN 모드로 실행하세요
-릴레이는 자기 머신에서 온 연결에 로그인을 요구하지 않습니다. userspace-networking 모드(`tailscaled --tun=userspace-networking`, 컨테이너에서 흔함)에서는 Tailscale이 tailnet 연결을 모두 릴레이 머신 안에서 넘겨주므로, 이 방문자들은 로그인 없이 들어옵니다. 기본값인 TUN 모드를 쓰세요. `tapflow start`와 `tapflow relay start`는 userspace 모드를 감지하면 경고합니다.
+릴레이는 릴레이 포트에 loopback으로 들어온 연결에 로그인을 요구하지 않습니다. userspace-networking 모드(`tailscaled --tun=userspace-networking`, 컨테이너에서 흔함)에서는 Tailscale이 tailnet 연결을 모두 릴레이 머신 안에서 넘겨주므로, 이 방문자들은 로그인 없이 들어옵니다. 기본값인 TUN 모드를 쓰세요. `tapflow start`와 `tapflow relay start`는 userspace 모드를 감지하면 경고합니다.
 :::
 
 #### HTTPS로 더 부드러운 스트림 켜기 (선택)
@@ -248,7 +248,7 @@ Tailscale은 브라우저→릴레이 경로만 제공합니다. 에이전트(�
 기본 접속은 평문 HTTP라 팀원에게 Standard 프로파일이 적용됩니다. Tailscale의 무료 HTTPS로 종단하면 Smooth 프로파일로 전환됩니다([스트림 품질](/ko/guide/streaming) 참고). Tailscale이 `*.ts.net` 인증서를 자동 발급·갱신하므로 도메인이나 DNS 토큰이 필요 없습니다.
 
 1. Tailscale admin 콘솔의 **DNS** 설정에서 **MagicDNS**와 **HTTPS Certificates**를 켭니다. 머신 이름이 공개 Certificate Transparency 기록에 남는다는 점에 동의해야 합니다.
-2. 릴레이 Mac에서 릴레이의 **터널 포트** 앞에 HTTPS를 둡니다. `TAPFLOW_TUNNEL_PORT`를 따로 정하지 않았다면 `4001`이며 시작 배너에도 나옵니다. Tailscale이 인증서를 자동 관리하므로 별도 발급 명령은 필요 없습니다:
+2. 릴레이 Mac에서 릴레이의 **터널 포트** 앞에 HTTPS를 둡니다. 기본값은 `4001`이고, `TAPFLOW_TUNNEL_PORT`를 정했거나 릴레이 자신이 4001을 쓰면 4002로 비켜섭니다. 시작 배너에 실제로 잡은 포트가 나오니 아래 명령에는 그 번호를 쓰세요. Tailscale이 인증서를 자동 관리하므로 별도 발급 명령은 필요 없습니다:
 
 ```sh
 tailscale serve --bg 4001

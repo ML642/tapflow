@@ -48,9 +48,13 @@ const CLIENT_CONFIG_PREFIX = 'tapflow-rathole-client-'
  * **The process listing is the liveness check, not `kill(pid, 0)`.** The owner's pid is in the config
  * file name, and a bare liveness probe says yes for a pid the OS has handed to something else — on a Mac
  * with a long uptime that is how the orphan above survives every later start. So an owner counts as alive
- * only while a process with that pid is still a node or tapflow one. The cost of reading it the other way
- * round is a live tunnel killed, which is why an owner that merely *looks* unrelated has to fail both
- * words before its client is stopped.
+ * only while a process with that pid still names **both** a node binary and tapflow, which is what every
+ * launch of this CLI looks like: an interpreter path plus `bin/tapflow.js` or the checkout it runs from.
+ *
+ * Measured on one Mac, 896 processes: 8 rows (0.9%) name node *or* tapflow, 1 row (0.1%) names both. The
+ * two errors are not symmetric — a client wrongly kept alive keeps forwarding to the relay port and says
+ * nothing, while one wrongly killed drops a tunnel loudly and the operator restarts it — so the stricter
+ * match is the right side to err on.
  */
 function stopOrphanedClients(): void {
   let listing: string
@@ -73,7 +77,7 @@ function stopOrphanedClients(): void {
   }
   for (const { pid, owner } of clients) {
     const ownerCommand = commands.get(owner)
-    if (ownerCommand !== undefined && /node|tapflow/i.test(ownerCommand)) continue
+    if (ownerCommand !== undefined && /node/i.test(ownerCommand) && /tapflow/i.test(ownerCommand)) continue
     try { process.kill(pid) } catch { /* already gone, or another account's */ }
   }
 }
@@ -97,6 +101,9 @@ export class RatholeTunnel implements TunnelPlugin {
   }
 
   async setupServer(): Promise<void> {
+    // Also here, not only in `start()`: `startConfiguredTunnel` calls this first, and either half can
+    // fail on a binary download — leaving the runner to fall back to local-only with the orphan running.
+    stopOrphanedClients()
     if (!this.sshCfg) return
 
     const ssh = this.sshCfg
