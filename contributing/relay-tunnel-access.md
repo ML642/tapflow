@@ -30,13 +30,24 @@ it puts the agent → relay leg across the internet, which is the one leg that m
 ## Design decisions
 
 - **Tunneling is opt-in and lives in a plugin.** `tapflow relay start` without a flag behaves
-  exactly as before. The relay, the WebSocket protocol, and the dashboard have no tunnel code;
-  a `TunnelPlugin` (`start(relayPort) → { publicUrl }`, `stop()`) spawns the tunnel process, so
-  new providers (rathole, cloudflared, and so on) drop in without touching the relay.
+  exactly as before. The WebSocket protocol and the dashboard have no tunnel code; a
+  `TunnelPlugin` (`start({ relayPort, tunnelPort }) → { publicUrl, warnings? }`, `stop()`) spawns
+  the tunnel process, so new providers (rathole, cloudflared, and so on) drop in without touching
+  the relay.
+- **The one thing the relay does know is a port, and that is not a leak of the plugin boundary.**
+  The relay exempts loopback connections from sign-in, and a tunnel client connects from loopback
+  on someone else's behalf, so the plugin could not keep the relay out of it: an auth decision
+  made from the address cannot tell those two apart. The relay therefore takes a `tunnelPort` and
+  treats everything arriving there as remote, while still knowing nothing about which tunnel is
+  in front of it. See [relay-agent-auth.md](./relay-agent-auth.md).
 - **Config mirrors the other secrets.** Tunnel settings live in `tapflow.config.json`, the
   token in an environment variable, consistent with the JWT/SMTP pattern. The CLI flag is an
   override for config-less one-off runs.
 - **No list of free public tunnel servers is shipped**, which would conflict with the privacy
   principle.
-- **Rejected**: Tailscale/Headscale (requires the viewer to install a client) and a
-  cloud-hosted relay (fails the RTT constraint above).
+- **Rejected at the time**: Tailscale/Headscale (requires the viewer to install a client) and a
+  cloud-hosted relay (fails the RTT constraint above). Tailscale shipped later as a provider
+  anyway: the client install is a real cost for an external collaborator and no cost for a team
+  that already runs a tailnet, so it is offered beside rathole rather than instead of it. The
+  cloud-hosted relay stays rejected, and `docs/guide/self-hosting.md` says so in its own
+  warning.
